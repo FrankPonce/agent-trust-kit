@@ -20,12 +20,18 @@
   },
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./network": "./src/network.js",
+    "./attestation": "./src/attestation.js",
+    "./keys": "./src/keys.js",
+    "./canonical": "./src/canonical.js",
+    "./http": "./src/http.js"
   },
   "files": [
     "src",
     "bin",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "sideEffects": false
 }
