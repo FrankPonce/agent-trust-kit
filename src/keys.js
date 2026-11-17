@@ -58,7 +58,13 @@ export async function fetchKeyDirectory(origin, { fetchImpl = globalThis.fetch }
   const url = new URL(KEY_DIRECTORY_PATH, origin);
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (url.protocol !== "https:" && !loopback) throw new Error(`Key directories must be served over HTTPS: ${url.origin}`);
-  const resp = await fetchImpl(url.href, { redirect: "error" });
+  // Keys must come from the origin itself, so redirects are refused. "manual" rather than
+  // "error": Cloudflare Workers reject redirect "error"; browsers return an opaque
+  // redirect (status 0) and Node/Workers a 3xx, and both fail the check below.
+  const resp = await fetchImpl(url.href, { redirect: "manual" });
+  if (resp.type === "opaqueredirect" || (resp.status >= 300 && resp.status < 400)) {
+    throw new Error(`The key directory at ${url.href} redirects; keys must be served by the origin itself.`);
+  }
   if (!resp.ok) throw new Error(`No key directory at ${url.href} (HTTP ${resp.status}).`);
   const jwks = await resp.json();
   if (!Array.isArray(jwks?.keys)) throw new Error(`The key directory at ${url.href} is not a JWKS.`);

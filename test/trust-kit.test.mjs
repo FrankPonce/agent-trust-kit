@@ -142,3 +142,16 @@ test("verifyRequest: refuses a changed body, a changed agent, an unknown key, an
   assert.match((await verifyRequest(signed, { jwks: JWKS, allowedAgents: ["https://someone-else.example"] })).reason, /not allowed/);
   assert.match((await verifyRequest({ ...REQ, headers: {} }, { jwks: JWKS })).reason, /Signature-Agent/);
 });
+
+test("key directories: fetched without following redirects, in a way Workers accept", async () => {
+  const { fetchKeyDirectory } = await import("../src/keys.js");
+  const seen = [];
+  const ok = async (url, init) => { seen.push(init?.redirect); return new Response(JSON.stringify(JWKS)); };
+  assert.deepEqual(await fetchKeyDirectory(ORIGIN, { fetchImpl: ok }), JWKS);
+  assert.deepEqual(seen, ["manual"], "Cloudflare Workers reject redirect: error");
+  const moved = async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example/keys" } });
+  await assert.rejects(fetchKeyDirectory(ORIGIN, { fetchImpl: moved }), /redirects/);
+  // What a browser returns for a redirect fetched with redirect: "manual".
+  const opaque = async () => ({ type: "opaqueredirect", status: 0, ok: false });
+  await assert.rejects(fetchKeyDirectory(ORIGIN, { fetchImpl: opaque }), /redirects/);
+});
