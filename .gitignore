@@ -3,3 +3,8 @@ node_modules/
 .dev.vars
 *.log
 .env*
+
+# Private keys never go in git (the published test vector key is the only exception).
+*.private.jwk.json
+!test/vectors/test-key.private.jwk.json
+keys/

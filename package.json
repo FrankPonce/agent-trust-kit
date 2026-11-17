@@ -4,6 +4,28 @@
   "description": "Domain-signed identity for agent networks: JCS + JWS network signing, JWKS publishing, RFC 9421 request signing.",
   "type": "module",
   "license": "Apache-2.0",
-  "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test \"test/*.test.mjs\"" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "canonicalize": "^4.0.0",
+    "http-message-signatures": "^1.0.10",
+    "jose": "^6.2.17"
+  },
+  "bin": {
+    "trust-kit": "bin/trust-kit.js"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ]
 }
