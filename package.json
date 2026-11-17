@@ -1,0 +1,9 @@
+{
+  "name": "agent-trust-kit",
+  "version": "0.0.0",
+  "description": "Domain-signed identity for agent networks: JCS + JWS network signing, JWKS publishing, RFC 9421 request signing.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test \"test/*.test.mjs\"" }
+}
