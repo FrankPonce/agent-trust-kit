@@ -206,3 +206,18 @@ test("key directories: fetched without following redirects, in a way Workers acc
   const opaque = async () => ({ type: "opaqueredirect", status: 0, ok: false });
   await assert.rejects(fetchKeyDirectory(ORIGIN, { fetchImpl: opaque }), /redirects/);
 });
+
+test("fetchSignature: a 404 or an HTML page means unsigned; other non-JSON is invalid", async () => {
+  const { fetchSignature } = await import("../src/index.js");
+  const serve = (body, init) => async () => new Response(body, init);
+  const url = `${ORIGIN}/vector_net.signature.json`;
+  const found = await fetchSignature(url, { fetchImpl: serve(JSON.stringify(SIGNATURE), { headers: { "content-type": "application/json" } }) });
+  assert.equal(found.status, "found");
+  assert.deepEqual(found.doc, SIGNATURE);
+  assert.equal((await fetchSignature(url, { fetchImpl: serve("not found", { status: 404 }) })).status, "missing");
+  // Cloudflare Pages answers a missing file with its home page and status 200 (F35).
+  assert.equal((await fetchSignature(url, { fetchImpl: serve("<!doctype html><html></html>", { headers: { "content-type": "text/html" } }) })).status, "missing");
+  assert.equal((await fetchSignature(url, { fetchImpl: serve("  <html>", { headers: { "content-type": "application/octet-stream" } }) })).status, "missing");
+  assert.equal((await fetchSignature(url, { fetchImpl: serve("oops", { headers: { "content-type": "text/plain" } }) })).status, "invalid");
+  assert.equal((await fetchSignature(url, { fetchImpl: serve("err", { status: 500 }) })).status, "invalid");
+});

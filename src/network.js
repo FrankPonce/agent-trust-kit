@@ -18,6 +18,32 @@ export function signatureUrl(base, name) {
 }
 
 /**
+ * Fetch a network's signature file, telling "unsigned" apart from "broken".
+ *
+ * Single-page hosts (Cloudflare Pages, Vercel, ...) answer a missing file with their HTML
+ * page and status 200, so an HTML answer means "no signature file", as a 404 does.
+ *
+ * :param url: The signature file's URL (see signatureUrl).
+ * :param opts: {fetchImpl?}.
+ * :return: {status: "found", url, doc} | {status: "missing", url, reason} |
+ *     {status: "invalid", url, reason} (a non-HTML answer that isn't JSON, or another HTTP error).
+ */
+export async function fetchSignature(url, { fetchImpl = globalThis.fetch } = {}) {
+  const resp = await fetchImpl(url, { headers: { accept: "application/json" } });
+  if (resp.status === 404 || resp.status === 410) return { status: "missing", url, reason: `no signature file (HTTP ${resp.status})` };
+  if (!resp.ok) return { status: "invalid", url, reason: `the signature file answered HTTP ${resp.status}` };
+  const body = await resp.text();
+  if (/text\/html/i.test(resp.headers.get("content-type") || "") || /^\s*</.test(body)) {
+    return { status: "missing", url, reason: "no signature file (the host serves an HTML page there)" };
+  }
+  try {
+    return { status: "found", url, doc: JSON.parse(body) };
+  } catch {
+    return { status: "invalid", url, reason: "the signature file is not JSON" };
+  }
+}
+
+/**
  * Sign a network.
  *
  * :param opts: {network: the parsed network JSON, name, origin: the publishing site's

@@ -2,9 +2,10 @@
 // trust-kit keys <out-dir>
 // trust-kit sign-network <network.json> --name <network> --origin <https://site> --key <private.jwk.json>
 // trust-kit verify <network-url>
+// trust-kit peer-trust <your-network-url> [--network <network.json>] [--out <peer-trust.json>]
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { keyDirectory, newSiteKey, signNetwork, signatureUrl, verifyNetwork } from "../src/index.js";
+import { fetchSignature, keyDirectory, newSiteKey, peerTrustReport, signNetwork, signatureUrl, verifyNetwork } from "../src/index.js";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name) => {
@@ -44,20 +45,60 @@ async function verify() {
   const parts = u.pathname.split("/").filter(Boolean);
   const name = decodeURIComponent(parts.pop());
   const base = `${u.origin}/${parts.join("/")}${parts.length ? "/" : ""}`;
-  const manifest = await (await fetch(new URL("agent-manifest.json", base))).json();
-  const entry = manifest.networks.find((n) => n.name === name);
+  const manifest = await getJson(new URL("agent-manifest.json", base).href);
+  const entry = manifest?.networks?.find((n) => n.name === name);
   if (!entry) throw new Error(`No network named ${name} in the manifest.`);
-  const network = await (await fetch(new URL(entry.hocon, base))).json();
-  const sigResp = await fetch(signatureUrl(base, name));
-  if (!sigResp.ok) throw new Error(`No signature at ${signatureUrl(base, name)} (HTTP ${sigResp.status}).`);
-  const r = await verifyNetwork({ doc: await sigResp.json(), network, name, networkOrigin: u.origin });
+  const network = await getJson(new URL(entry.hocon, base).href);
+  const sig = await fetchSignature(signatureUrl(base, name));
+  if (sig.status === "missing") {
+    console.log(`UNSIGNED: ${sig.url}: ${sig.reason}. Who published ${name} is not proven.`);
+    process.exit(1);
+  }
+  const r = sig.status === "found"
+    ? await verifyNetwork({ doc: sig.doc, network, name, networkOrigin: u.origin })
+    : { ok: false, reason: `${sig.url}: ${sig.reason}` };
   console.log(r.ok ? `OK: ${name} is signed by ${r.statement.origin} (key ${r.kid}), sha256 ${r.network_sha256}` : `FAIL: ${r.reason}`);
   process.exit(r.ok ? 0 : 1);
 }
 
-const commands = { keys, "sign-network": sign, verify };
+async function getJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url} answered HTTP ${resp.status}.`);
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${url} is not JSON.`);
+  }
+}
+
+// Build step for a static site: check every partner its network can contact and write
+// the result, to be served at /.well-known/peer-trust.json from the site's own origin.
+async function peerTrust() {
+  const url = rest[0];
+  if (!url) throw new Error("Usage: trust-kit peer-trust <your-network-url> [--network <network.json>] [--out <peer-trust.json>]");
+  const networkFile = flag("network");
+  const network = networkFile ? JSON.parse(await readFile(networkFile, "utf8")) : null;
+  const report = await peerTrustReport(url, { network });
+  const text = `${JSON.stringify(report, null, 2)}\n`;
+  const out = flag("out");
+  if (out) {
+    await mkdir(path.dirname(out), { recursive: true });
+    await writeFile(out, text);
+  }
+  for (const p of report.peers) {
+    const s = p.kind === "mcp" ? p.note
+      : p.error ? `could not check: ${p.error}`
+        : `${p.signature.ok ? "signed" : p.signature.status}; ${p.attestation.ok ? `attested ${p.attestation.score} (coverage ${p.attestation.coverage}) on ${p.attestation.model}` : `not vouched for: ${p.attestation.reason}`}`;
+    console.error(`${p.trusted ? "✓" : "⚠"} ${p.host}: ${s}`);
+  }
+  if (out) console.error(`wrote ${out}`);
+  else console.log(text.trimEnd());
+}
+
+const commands = { keys, "sign-network": sign, verify, "peer-trust": peerTrust };
 if (!commands[cmd]) {
-  console.log("Usage: trust-kit <keys | sign-network | verify> ...");
+  console.log("Usage: trust-kit <keys | sign-network | verify | peer-trust> ...");
   process.exit(2);
 }
 commands[cmd]().catch((e) => {

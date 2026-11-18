@@ -50,6 +50,41 @@ const signed = await signRequest({ method: "POST", url, headers: {}, body }, { p
 const who = await verifyRequest(signed, { allowedAgents: ["https://charge.example"] });
 ```
 
+## Peer trust on the consent card (drop-in)
+
+Before the runtime contacts another site's agent, it asks the visitor on a consent card.
+The card can now say what is known about that partner:
+
+> ✓ Signed by housing.example · ✓ tested 100/100 (coverage 100%) on qwen3.8-flash by
+> crashtest.example; kept private details private
+
+or *⚠ Not signed by its domain · ⚠ no test results from a tester this site trusts*.
+
+The check runs on **your own server**, never in the visitor's browser, so nothing contacts the
+partner before the visitor agrees. Nothing changes in the runtime, in agent-to-agent messages,
+or in what the model sees. The default is to **show the facts and let the visitor decide**;
+blocking unverified partners is opt-in.
+
+1. **Serve `/.well-known/peer-trust.json`** from your origin. On a server or Worker:
+   ```js
+   import { peerTrustResponse } from "agent-trust-kit/peer";
+   // GET /.well-known/peer-trust.json  (checked at most every 5 minutes)
+   return peerTrustResponse("https://your.site/your_network");
+   ```
+   On a static host, write it in your build step instead (re-run it at least daily):
+   `npx trust-kit peer-trust https://your.site/your_network --network site/your_network.network.json --out site/.well-known/peer-trust.json`
+2. **Copy `src/peer-card.js`** next to your `site.js`, and after `boot()`:
+   ```js
+   const { withPeerTrust } = await import("./js/peer-card.js");
+   booted.engine.onConsent = withPeerTrust(booted.engine.onConsent);   // { block: true } to opt in
+   ```
+
+`checkNetwork(url)` is the check behind it, and the same check an arbiter uses to admit a
+cross-site caller: the network is signed by its own domain, and a tester in the policy has
+an unexpired attestation for exactly that network hash, with score ≥ 80, coverage ≥ 80 and no
+test that failed outright (`DEFAULT_TRUST_POLICY`; pass your own `policy`). Partners linked at
+runtime by the visitor aren't in your network file, so they show as "not checked".
+
 ## Attestation format
 
 ```jsonc
@@ -79,7 +114,8 @@ const who = await verifyRequest(signed, { allowedAgents: ["https://charge.exampl
 ```bash
 npx trust-kit keys ./keys                       # new Ed25519 key; private file stays local
 npx trust-kit sign-network site/my_net.network.json --name my_net --origin https://site.example --key keys/site-key.private.jwk.json
-npx trust-kit verify https://site.example/my_net
+npx trust-kit verify https://site.example/my_net   # OK / FAIL / UNSIGNED (a 404 or an HTML page = unsigned)
+npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer-trust.json
 ```
 
 ## Tests
