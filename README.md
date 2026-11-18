@@ -90,7 +90,9 @@ runtime by the visitor aren't in your network file, so they show as "not checked
 ```jsonc
 { "_type": "https://in-toto.io/Statement/v1",
   "subject": [{ "name": "https://site.example/my_net",
-                "digest": { "jcs_sha256": "<hex>", "sha256": "<hex>" } }],
+                "digest": { "jcs_sha256": "<hex>", "sha256": "<hex>" } },
+              { "name": "https://site.example/agent-manifest.json#actions",
+                "digest": { "jcs_sha256": "<hex of the manifest's actions>" } }],
   "predicateType": "https://in-toto.io/attestation/test-result/v0.1",
   "predicate": {
     "result": "PASSED | WARNED | FAILED", "passedTests": [], "warnedTests": [], "failedTests": [],
@@ -103,6 +105,10 @@ runtime by the visitor aren't in your network file, so they show as "not checked
 
 - `jcs_sha256` is SHA-256 over the network's RFC 8785 canonical JSON, lowercase hex: the
   same however the file is formatted. `sha256` is the file's bytes as served when tested.
+- The `#actions` subject binds the site's declared actions (`agent-manifest.json` `actions`,
+  JCS hash, `actionsSha256()`): the tools an agent can run on the page live outside the network
+  file, so a new action changes this digest. `checkNetwork` requires it to match
+  (`bindActions`, on by default).
 - `warnedTests` are flaky tests (passed in some runs). `score` averages tests with a decided
   run; `coverage` is the share of runs that were decided.
 - The envelope is DSSE v1 with `payloadType` `application/vnd.in-toto+json`; `keyid` is the

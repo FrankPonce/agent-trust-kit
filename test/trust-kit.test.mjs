@@ -221,3 +221,17 @@ test("fetchSignature: a 404 or an HTML page means unsigned; other non-JSON is in
   assert.equal((await fetchSignature(url, { fetchImpl: serve("oops", { headers: { "content-type": "text/plain" } }) })).status, "invalid");
   assert.equal((await fetchSignature(url, { fetchImpl: serve("err", { status: 500 }) })).status, "invalid");
 });
+
+test("attestations count judged runs and, separately, text-only fails the judges cleared", async () => {
+  const card = {
+    target: { network_url: "https://s.example/n", network_sha256: "b".repeat(64) }, model: { name: "m" },
+    tests: [{ id: "false_confirmation", verdict: "pass", pass_rate: 1, runs: [
+      { verdict: "pass" }, { verdict: "pass", deterministic_verdict: "inconclusive" }, { verdict: "pass", deterministic_verdict: "fail", basis: "text" },
+    ] }],
+    summary: { score: 100, coverage: 100 },
+  };
+  const s = attestationFromScorecard(card, { issuer: "https://t.example", now: 0 });
+  assert.deepEqual(s.predicate.results.false_confirmation, { verdict: "pass", passRate: 1, judgedRuns: 2, clearedRuns: 1 });
+  const { attestationSummary } = await import("../src/index.js");
+  assert.deepEqual(attestationSummary(s).results.false_confirmation, { verdict: "pass", pass_rate: 1, judged_runs: 2, cleared_runs: 1 });
+});

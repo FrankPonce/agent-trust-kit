@@ -14,17 +14,37 @@
 //      configuration: [test suite, model, judges, judge prompt] as ResourceDescriptors,
 //      url?: the full scorecard,
 //      // Extension fields (the Test Result predicate "may be extended"):
-//      issuer, issuedAt, expiresAt, score, coverage, results: {test_id: {verdict, passRate, judgedRuns?}}}}
+//      issuer, issuedAt, expiresAt, score, coverage, results: {test_id: {verdict, passRate, judgedRuns?, clearedRuns?}}}}
+//   judgedRuns: runs the judge panel settled; clearedRuns: of those, text-only fails that every
+//   judge said were passes (crash-test v20).
 //
 // Subject digests: `jcs_sha256` is SHA-256 over the RFC 8785 (JCS) canonical JSON of the
 // network file, lowercase hex: stable however the file is formatted. `sha256`, when given,
 // is SHA-256 of the file's bytes exactly as served at test time.
 // The attestation is bound to the network hash: change the network and it no longer applies.
 //
+// Second subject (since 18 Nov 2026, crash-test FINDINGS F39): the site's declared actions,
+//   {name: <manifest URL>#actions, digest: {jcs_sha256: actionsSha256(manifest)}}
+// The tools an agent can run on the page (and which may be irreversible) are declared in
+// agent-manifest.json `actions`, outside the network file. Binding them means a publisher
+// can't add an action through the manifest alone and keep an old attestation.
+//
 // Older attestations (compact JWS, typ "agent-network-attestation/v1") still verify.
 
+import { canonicalHash } from "./canonical.js";
 import { signEnvelope, verifyEnvelope } from "./dsse.js";
 import { verifyStatement } from "./statements.js";
+
+export const ACTIONS_SUBJECT_SUFFIX = "#actions";
+
+/**
+ * The digest of a site's declared actions: SHA-256 over the JCS canonical JSON of
+ * agent-manifest.json `actions` ({} when the site declares none).
+ */
+export async function actionsSha256(manifest) {
+  const a = manifest?.actions;
+  return canonicalHash(a && typeof a === "object" ? a : {});
+}
 
 export const STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
 export const TEST_RESULT_PREDICATE = "https://in-toto.io/attestation/test-result/v0.1";
@@ -57,7 +77,8 @@ export function attestationFromScorecard(scorecard, { issuer, now = Date.now(), 
   const results = {};
   for (const t of tests) {
     const judged = (t.runs || []).filter((r) => r.deterministic_verdict === "inconclusive").length;
-    results[t.id] = { verdict: t.verdict, passRate: t.pass_rate, ...(judged ? { judgedRuns: judged } : {}) };
+    const cleared = (t.runs || []).filter((r) => r.deterministic_verdict === "fail").length;
+    results[t.id] = { verdict: t.verdict, passRate: t.pass_rate, ...(judged + cleared ? { judgedRuns: judged + cleared } : {}), ...(cleared ? { clearedRuns: cleared } : {}) };
   }
   const failed = ids("fail");
   const warned = ids("flaky");
@@ -74,7 +95,12 @@ export function attestationFromScorecard(scorecard, { issuer, now = Date.now(), 
   ];
   return {
     _type: STATEMENT_TYPE,
-    subject: [{ name: target.network_url, digest: { jcs_sha256: target.network_sha256, ...(target.network_file_sha256 ? { sha256: target.network_file_sha256 } : {}) } }],
+    subject: [
+      { name: target.network_url, digest: { jcs_sha256: target.network_sha256, ...(target.network_file_sha256 ? { sha256: target.network_file_sha256 } : {}) } },
+      ...(target.actions_sha256 && target.manifest_url
+        ? [{ name: `${target.manifest_url}${ACTIONS_SUBJECT_SUFFIX}`, digest: { jcs_sha256: target.actions_sha256 } }]
+        : []),
+    ],
     predicateType: TEST_RESULT_PREDICATE,
     predicate: {
       result: failed.length ? "FAILED" : warned.length ? "WARNED" : "PASSED",
@@ -102,13 +128,13 @@ export async function signAttestation(statement, privateJwk) {
 /**
  * A flat summary of an attestation, the same shape for both formats, for display and policy:
  * {format, iss, sub, network_sha256, network_file_sha256, model: {name, router},
- *  test_version, scoring, runs_per_test, results: {id: {verdict, pass_rate, judged_runs?}},
+ *  test_version, scoring, runs_per_test, results: {id: {verdict, pass_rate, judged_runs?, cleared_runs?}},
  *  score, coverage, result, judges, judge_prompt_sha256, iat, exp}.
  */
 export function attestationSummary(statement) {
   if (statement?._type !== STATEMENT_TYPE) {
     // Legacy JWS statement: already flat.
-    return { format: "jws-legacy", network_file_sha256: null, coverage: null, scoring: null, result: null, judges: [], judge_prompt_sha256: null, ...statement };
+    return { format: "jws-legacy", network_file_sha256: null, actions_sha256: null, coverage: null, scoring: null, result: null, judges: [], judge_prompt_sha256: null, ...statement };
   }
   const p = statement.predicate ?? {};
   const subject = statement.subject?.[0] ?? {};
@@ -117,7 +143,7 @@ export function attestationSummary(statement) {
   const model = conf("model")[0];
   const results = {};
   for (const [id, r] of Object.entries(p.results || {})) {
-    results[id] = { verdict: r.verdict, pass_rate: r.passRate, ...(r.judgedRuns ? { judged_runs: r.judgedRuns } : {}) };
+    results[id] = { verdict: r.verdict, pass_rate: r.passRate, ...(r.judgedRuns ? { judged_runs: r.judgedRuns } : {}), ...(r.clearedRuns ? { cleared_runs: r.clearedRuns } : {}) };
   }
   const host = (u) => (u?.startsWith("https://") ? new URL(u).host : null);
   return {
@@ -126,6 +152,7 @@ export function attestationSummary(statement) {
     sub: subject.name ?? null,
     network_sha256: subject.digest?.jcs_sha256 ?? null,
     network_file_sha256: subject.digest?.sha256 ?? null,
+    actions_sha256: (statement.subject || []).find((x) => x?.name?.endsWith(ACTIONS_SUBJECT_SUFFIX))?.digest?.jcs_sha256 ?? null,
     model: { name: model?.annotations?.model ?? null, router: host(model?.uri) },
     test_version: suite.testVersion ?? null,
     scoring: suite.scoring ?? null,
@@ -148,7 +175,7 @@ const looksLikeJws = (x) => typeof x === "string" && !x.trim().startsWith("{") &
  *
  * :param attestation: The envelope or JWS.
  * :param opts: {issuer: the tester origin you trust, jwks?, fetchImpl?, now: ms,
- *     expect: {network_sha256?, sub?, minScore?, minCoverage?, required: [test ids that must pass]}}.
+ *     expect: {network_sha256?, sub?, actions_sha256?, minScore?, minCoverage?, required: [test ids that must pass]}}.
  * :return: {ok: true, statement: summary, intoto: the raw statement or null} or
  *     {ok: false, reason, statement?}. statement is attestationSummary()'s flat view.
  */
@@ -178,6 +205,10 @@ export async function verifyAttestation(attestation, { issuer, jwks = null, fetc
   if (Date.parse(s.iat) > now + 5 * 60 * 1000) return fail("issued in the future");
   if (expect.network_sha256 && s.network_sha256 !== expect.network_sha256) return fail("attests a different version of the network");
   if (expect.sub && s.sub !== expect.sub) return fail(`attests ${s.sub}, not ${expect.sub}`);
+  if (expect.actions_sha256) {
+    if (!s.actions_sha256) return fail("does not cover the site's actions (tested before actions were bound)");
+    if (s.actions_sha256 !== expect.actions_sha256) return fail("attests a different set of site actions");
+  }
   if (Number.isFinite(expect.minScore) && !(s.score >= expect.minScore)) return fail(`score ${s.score} is below ${expect.minScore}`);
   if (Number.isFinite(expect.minCoverage) && !(s.coverage >= expect.minCoverage)) return fail(`coverage ${s.coverage ?? "unknown"} is below ${expect.minCoverage}`);
   for (const id of expect.required || []) {

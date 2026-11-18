@@ -4,7 +4,7 @@ export { signStatement, verifyStatement } from "./statements.js";
 export { NETWORK_SIGNATURE_TYPE, signatureUrl, fetchSignature, signNetwork, verifyNetwork } from "./network.js";
 export {
   ATTESTATION_TYPE, STATEMENT_TYPE, TEST_RESULT_PREDICATE, INTOTO_PAYLOAD_TYPE,
-  attestationFromScorecard, attestationSummary, signAttestation, verifyAttestation,
+  attestationFromScorecard, attestationSummary, signAttestation, verifyAttestation, actionsSha256, ACTIONS_SUBJECT_SUFFIX,
 } from "./attestation.js";
 export { pae, signEnvelope, verifyEnvelope } from "./dsse.js";
 export { signRequest, verifyRequest } from "./http.js";

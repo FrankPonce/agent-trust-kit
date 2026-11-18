@@ -8,7 +8,7 @@
 //     site's own origin, so the browser never contacts the peer before consent).
 
 import { canonicalHash } from "./canonical.js";
-import { verifyAttestation } from "./attestation.js";
+import { actionsSha256, verifyAttestation } from "./attestation.js";
 import { fetchSignature, signatureUrl, verifyNetwork } from "./network.js";
 
 export const PEER_TRUST_TYPE = "peer-trust/v1";
@@ -22,6 +22,9 @@ export const DEFAULT_TRUST_POLICY = Object.freeze({
   // An average can hide a critical failure (crash-test FINDINGS F45): refuse any network
   // with a test that failed outright, unless a policy sets this to false.
   noFailedTests: true,
+  // The attestation must also cover the site's declared actions as published now (F39),
+  // unless a policy sets this to false.
+  bindActions: true,
 });
 
 /**
@@ -96,6 +99,7 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
   let network_url = name ? new URL(encodeURIComponent(name), base).href : null;
   let network;
   let network_sha256;
+  let actions_sha256;
   try {
     const manifest = await getJson(new URL("agent-manifest.json", base).href, fetchImpl);
     const entry = name ? manifest?.networks?.find((n) => n?.name === name) : manifest?.networks?.[0];
@@ -106,6 +110,7 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
     network_url = new URL(encodeURIComponent(name), base).href;
     network = await getJson(new URL(entry.hocon, base).href, fetchImpl);
     network_sha256 = await canonicalHash(network);
+    actions_sha256 = await actionsSha256(manifest);
   } catch (error) {
     return { trusted: false, origin, network_url, error: `Could not load ${origin}'s agent network: ${error.message}` };
   }
@@ -127,12 +132,12 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
   }
 
   // 2. Does it behave: an attestation for exactly this network hash, meeting the policy.
-  const attestation = await bestAttestation({ network_url, network_sha256, policy, fetchImpl, now });
+  const attestation = await bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now });
 
-  return { network_url, origin, network_sha256, trusted: signature.ok && attestation.ok, signature, attestation };
+  return { network_url, origin, network_sha256, actions_sha256, trusted: signature.ok && attestation.ok, signature, attestation };
 }
 
-async function bestAttestation({ network_url, network_sha256, policy, fetchImpl, now }) {
+async function bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now }) {
   const problems = [];
   let shown = null; // a verified attestation that misses the policy, to show honestly
   for (const t of policy.testers || []) {
@@ -153,7 +158,7 @@ async function bestAttestation({ network_url, network_sha256, policy, fetchImpl,
         problems.push(error.message);
         continue;
       }
-      const v = await verifyAttestation(signed, { issuer: t.origin, fetchImpl, now, expect: { sub: network_url, network_sha256 } });
+      const v = await verifyAttestation(signed, { issuer: t.origin, fetchImpl, now, expect: { sub: network_url, network_sha256, ...(policy.bindActions !== false ? { actions_sha256 } : {}) } });
       if (!v.ok) {
         problems.push(v.reason);
         continue;
@@ -255,7 +260,7 @@ export async function peerTrustReport(siteNetworkUrl, { policy = DEFAULT_TRUST_P
     typ: PEER_TRUST_TYPE,
     site: siteNetworkUrl,
     generated_at: new Date(now).toISOString(),
-    policy: { testers: (policy.testers || []).map((t) => t.origin), minScore: policy.minScore, minCoverage: policy.minCoverage, noFailedTests: policy.noFailedTests !== false },
+    policy: { testers: (policy.testers || []).map((t) => t.origin), minScore: policy.minScore, minCoverage: policy.minCoverage, noFailedTests: policy.noFailedTests !== false, bindActions: policy.bindActions !== false },
     peers,
   };
 }

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import {
   KEY_DIRECTORY_PATH, attestationFromScorecard, canonicalHash, keyDirectory, newSiteKey,
   signAttestation, signNetwork, checkNetwork, peerTrustReport, peerTrustResponse, clearPeerTrustCache,
-  cachingFetch, isMcpRef, PEER_TRUST_TYPE,
+  cachingFetch, isMcpRef, PEER_TRUST_TYPE, actionsSha256, verifyAttestation,
 } from "../src/index.js";
 import { describePeer, withPeerTrust } from "../src/peer-card.js";
 
@@ -24,7 +24,9 @@ const SITE_NETWORK = {
 
 beforeEach(() => clearPeerTrustCache());
 
-async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing") } = {}) {
+const GOOD_ACTIONS = { version: 1, agentTools: ["get_rules"] };
+
+async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing"), servedActions = GOOD_ACTIONS, bindActions = true } = {}) {
   const tester = await newSiteKey();
   const good = await newSiteKey();
   const files = new Map();
@@ -33,7 +35,7 @@ async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housi
   put(`${GOOD}${KEY_DIRECTORY_PATH}`, await keyDirectory([good.publicJwk]));
   put(`${SITE}/agent-manifest.json`, { networks: [{ name: "charge_planner", hocon: "./charge_planner.network.json" }] });
   put(`${SITE}/charge_planner.network.json`, SITE_NETWORK);
-  put(`${GOOD}/agent-manifest.json`, { networks: [{ name: "housing", hocon: "./housing.network.json" }] });
+  put(`${GOOD}/agent-manifest.json`, { networks: [{ name: "housing", hocon: "./housing.network.json" }], actions: servedActions });
   put(`${GOOD}/housing.network.json`, servedGood);
   put(`${GOOD}/housing.signature.json`, await signNetwork({ network: net("housing"), name: "housing", origin: GOOD, privateJwk: good.privateJwk }));
   put(`${BAD}/agent-manifest.json`, { networks: [{ name: "deals", hocon: "./deals.network.json" }] });
@@ -41,8 +43,13 @@ async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housi
   // A single-page host: a missing signature file comes back as its HTML home page.
   put(`${BAD}/deals.signature.json`, "<!doctype html><title>Deals</title>", "text/html");
 
+  // The tester saw each site's manifest as first published (GOOD_ACTIONS for the good one).
+  const actions = { [`${GOOD}/housing`]: { actions: GOOD_ACTIONS }, [`${BAD}/deals`]: {} };
   const attest = async (sub, network, tests, score) => JSON.stringify(await signAttestation(attestationFromScorecard({
-    target: { network_url: sub, network_sha256: await canonicalHash(network) },
+    target: {
+      network_url: sub, network_sha256: await canonicalHash(network),
+      ...(bindActions ? { manifest_url: new URL("agent-manifest.json", sub).href, actions_sha256: await actionsSha256(actions[sub]) } : {}),
+    },
     model: { name: "alibaba/qwen3.8-flash", routerHost: "eu.api.otari.ai" }, tester: { test_version: 18 }, runs_per_test: 3,
     tests, summary: { score, coverage: 100, scoring: "decided/1" },
   }, { issuer: TESTER, now: NOW - 864e5 }), tester.privateJwk));
@@ -107,7 +114,7 @@ test("peerTrustReport: lists other origins' networks and MCP servers, not the si
     ["housing.example", "network", true], ["deals.example", "network", false], ["tools.example", "mcp", false],
   ]);
   assert.equal(report.peers[0].label, "Housing company");
-  assert.deepEqual(report.policy, { testers: [TESTER], minScore: 80, minCoverage: 80, noFailedTests: true });
+  assert.deepEqual(report.policy, { testers: [TESTER], minScore: 80, minCoverage: 80, noFailedTests: true, bindActions: true });
   assert.equal(isMcpRef("https://a.example/mcp"), true);
   assert.equal(isMcpRef("https://a.example/agent"), false);
 });
@@ -128,7 +135,7 @@ test("peerTrustResponse and cachingFetch: one check per period, served as JSON",
   const cf = cachingFetch(fetchImpl, { now: () => t });
   const before = calls.length;
   await (await cf(`${GOOD}/agent-manifest.json`)).json();
-  assert.deepEqual(await (await cf(`${GOOD}/agent-manifest.json`)).json(), { networks: [{ name: "housing", hocon: "./housing.network.json" }] });
+  assert.deepEqual(await (await cf(`${GOOD}/agent-manifest.json`)).json(), { networks: [{ name: "housing", hocon: "./housing.network.json" }], actions: GOOD_ACTIONS });
   assert.equal(calls.length, before + 1);
   t = 6 * 60_000;
   await cf(`${GOOD}/agent-manifest.json`);
@@ -171,4 +178,43 @@ test("withPeerTrust: the card shows at once; block mode declines untrusted partn
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("actions binding: a new action in the manifest alone takes the attestation away (F39)", async () => {
+  // Same network, same signature; only the manifest gained an irreversible action.
+  const { fetchImpl } = await web({ servedActions: { version: 1, agentTools: ["get_rules", "pay_now"] } });
+  const r = await checkNetwork(`${GOOD}/housing`, { policy: POLICY, fetchImpl, now: NOW });
+  assert.equal(r.signature.ok, true, "the network signature can't see it");
+  assert.equal(r.trusted, false);
+  assert.match(r.attestation.reason, /different set of site actions/);
+  assert.match(describePeer({ kind: "network", ...r }).text, /changed since it was tested/);
+  // Key order in the manifest doesn't matter (JCS).
+  const reordered = await web({ servedActions: { agentTools: ["get_rules"], version: 1 } });
+  assert.equal((await checkNetwork(`${GOOD}/housing`, { policy: POLICY, fetchImpl: reordered.fetchImpl, now: NOW })).trusted, true);
+});
+
+test("actions binding: attestations from before it are refused unless a policy allows them", async () => {
+  const { fetchImpl } = await web({ bindActions: false });
+  const r = await checkNetwork(`${GOOD}/housing`, { policy: POLICY, fetchImpl, now: NOW });
+  assert.match(r.attestation.reason, /does not cover the site's actions/);
+  assert.equal((await checkNetwork(`${GOOD}/housing`, { policy: { ...POLICY, bindActions: false }, fetchImpl, now: NOW })).trusted, true);
+});
+
+test("actions subject: in the statement, in the summary, and checked by verifyAttestation", async () => {
+  const sub = "https://s.example/net";
+  const tester = await newSiteKey();
+  const manifest = { actions: { version: 1, agentTools: ["a"] } };
+  const statement = attestationFromScorecard({
+    target: { network_url: sub, network_sha256: "a".repeat(64), manifest_url: "https://s.example/agent-manifest.json", actions_sha256: await actionsSha256(manifest) },
+    model: { name: "m" }, tests: [], summary: { score: 100, coverage: 100 },
+  }, { issuer: TESTER, now: NOW });
+  assert.deepEqual(statement.subject[1], { name: "https://s.example/agent-manifest.json#actions", digest: { jcs_sha256: await actionsSha256(manifest) } });
+  assert.equal(await actionsSha256({}), await actionsSha256({ actions: {} }), "no actions = {}");
+  const env = await signAttestation(statement, tester.privateJwk);
+  const jwks = await keyDirectory([tester.publicJwk]);
+  const ok = await verifyAttestation(env, { issuer: TESTER, jwks, now: NOW, expect: { actions_sha256: await actionsSha256(manifest) } });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.equal(ok.statement.actions_sha256, await actionsSha256(manifest));
+  const other = await verifyAttestation(env, { issuer: TESTER, jwks, now: NOW, expect: { actions_sha256: await actionsSha256({ actions: { agentTools: ["a", "b"] } }) } });
+  assert.match(other.reason, /different set of site actions/);
 });
