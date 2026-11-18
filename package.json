@@ -1,7 +1,7 @@
 {
   "name": "agent-trust-kit",
   "version": "0.0.0",
-  "description": "Domain-signed identity for agent networks: JCS + JWS network signing, JWKS publishing, RFC 9421 request signing.",
+  "description": "Domain-signed identity for agent networks: JCS + JWS network signing, JWKS publishing, RFC 9421 request signing, in-toto test-result attestations in DSSE envelopes.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -25,7 +25,8 @@
     "./attestation": "./src/attestation.js",
     "./keys": "./src/keys.js",
     "./canonical": "./src/canonical.js",
-    "./http": "./src/http.js"
+    "./http": "./src/http.js",
+    "./dsse": "./src/dsse.js"
   },
   "files": [
     "src",

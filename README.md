@@ -15,7 +15,7 @@ Node 22 and Cloudflare Workers (WebCrypto Ed25519).
 |---|---|---|
 | **Key directory** at `/.well-known/http-message-signatures-directory` | JWKS, the [Web Bot Auth](https://datatracker.ietf.org/wg/webbotauth/) location; kid = RFC 7638 thumbprint | "These keys belong to this domain" (backed by HTTPS) |
 | **Network signature** `<network>.signature.json` | JWS (RFC 7515, EdDSA) over the network's canonical hash (JCS, RFC 8785) | "This origin published this exact network, and it hasn't changed since" |
-| **Attestation** | JWS from a tester, bound to the network hash and the model | "This exact network passed these tests on this model, until this date" |
+| **Attestation** | [in-toto Statement v1](https://github.com/in-toto/attestation) with the standard [Test Result predicate](https://github.com/in-toto/attestation/blob/main/spec/predicates/test-result.md), in a [DSSE](https://github.com/secure-systems-lab/dsse) envelope (Ed25519); subject = network URL + hash | "This exact network passed these tests on this model, until this date". Any in-toto tooling can read it |
 | **Request signature** | HTTP Message Signatures (RFC 9421) + `Content-Digest` + `Signature-Agent` | "This request, with this body, came from that site's server" |
 
 Verification always takes keys from the **network's own origin**, so a signed network
@@ -40,15 +40,39 @@ const doc = await signNetwork({ network, name: "charge_planner", origin: "https:
 // Anyone: check a network you fetched from https://charge.example.
 const r = await verifyNetwork({ doc, network, name: "charge_planner", networkOrigin: "https://charge.example" });
 
-// Tester: attest; arbiter: admit only attested agents.
-const jws = await signAttestation(attestationFromScorecard(scorecard, { issuer: "https://crashtest.example" }), testerKey);
-const ok = await verifyAttestation(jws, { issuer: "https://crashtest.example",
-  expect: { network_sha256: r.network_sha256, required: ["grounding_on_failure"], minScore: 80 } });
+// Tester: attest (in-toto statement in a DSSE envelope); arbiter: admit only attested agents.
+const envelope = await signAttestation(attestationFromScorecard(scorecard, { issuer: "https://crashtest.example" }), testerKey);
+const ok = await verifyAttestation(envelope, { issuer: "https://crashtest.example",
+  expect: { network_sha256: r.network_sha256, required: ["grounding_on_failure"], minScore: 80, minCoverage: 80 } });
 
 // Server-to-server: sign a request; the receiver verifies with the sender's directory.
 const signed = await signRequest({ method: "POST", url, headers: {}, body }, { privateJwk, signatureAgent: "https://charge.example" });
 const who = await verifyRequest(signed, { allowedAgents: ["https://charge.example"] });
 ```
+
+## Attestation format
+
+```jsonc
+{ "_type": "https://in-toto.io/Statement/v1",
+  "subject": [{ "name": "https://site.example/my_net",
+                "digest": { "jcs_sha256": "<hex>", "sha256": "<hex>" } }],
+  "predicateType": "https://in-toto.io/attestation/test-result/v0.1",
+  "predicate": {
+    "result": "PASSED | WARNED | FAILED", "passedTests": [], "warnedTests": [], "failedTests": [],
+    "configuration": [ /* ResourceDescriptors: test suite + version, model, judges, judge prompt digest */ ],
+    "url": "<full scorecard>",
+    // Extension fields (the Test Result predicate may be extended):
+    "issuer": "https://crashtest.example", "issuedAt": "...", "expiresAt": "...",
+    "score": 100, "coverage": 100, "results": { "<test_id>": { "verdict": "pass", "passRate": 1 } } } }
+```
+
+- `jcs_sha256` is SHA-256 over the network's RFC 8785 canonical JSON, lowercase hex: the
+  same however the file is formatted. `sha256` is the file's bytes as served when tested.
+- `warnedTests` are flaky tests (passed in some runs). `score` averages tests with a decided
+  run; `coverage` is the share of runs that were decided.
+- The envelope is DSSE v1 with `payloadType` `application/vnd.in-toto+json`; `keyid` is the
+  tester's RFC 7638 key thumbprint, found in its key directory.
+- Older compact-JWS attestations (`agent-network-attestation/v1`) still verify.
 
 ## CLI
 

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   canonicalHash, canonicalJson, keyDirectory, newSiteKey, publicPart, signNetwork, verifyNetwork,
   attestationFromScorecard, signAttestation, verifyAttestation, signRequest, verifyRequest, KEY_DIRECTORY_PATH,
+  ATTESTATION_TYPE, STATEMENT_TYPE, pae, signEnvelope, verifyEnvelope, signStatement,
 } from "../src/index.js";
 
 const read = async (f) => JSON.parse(await readFile(new URL(`./vectors/${f}`, import.meta.url), "utf8"));
@@ -100,10 +101,60 @@ const SCORECARD = {
   summary: { score: 89 },
 };
 
+test("DSSE: PAE matches the spec's example; envelopes verify and refuse tampering", async () => {
+  // From the DSSE v1 protocol description.
+  assert.equal(new TextDecoder().decode(pae("http://example.com/HelloWorld", new TextEncoder().encode("hello world"))),
+    "DSSEv1 29 http://example.com/HelloWorld 11 hello world");
+  const env = await signEnvelope("hello world", "http://example.com/HelloWorld", TEST_KEY);
+  assert.equal(env.signatures[0].keyid, TEST_KEY.kid);
+  const ok = await verifyEnvelope(JSON.stringify(env), { jwks: JWKS });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.equal(new TextDecoder().decode(ok.payload), "hello world");
+  assert.equal((await verifyEnvelope({ ...env, payload: btoa("hello there") }, { jwks: JWKS })).ok, false);
+  assert.equal((await verifyEnvelope({ ...env, payloadType: "x/other" }, { jwks: JWKS })).ok, false, "the type is signed too");
+  const stranger = await keyDirectory([(await newSiteKey()).publicJwk]);
+  assert.match((await verifyEnvelope(env, { jwks: stranger })).reason, /no signature from a key/);
+});
+
+test("attestations are in-toto Statement v1 + Test Result predicate in a DSSE envelope", async () => {
+  const now = Date.parse("2026-11-17T12:00:00Z");
+  const card = { ...SCORECARD, target: { ...SCORECARD.target, network_file_sha256: "f".repeat(64) }, judges: [{ name: "deepseek/deepseek-v4.1-flash", routerHost: "eu.api.otari.ai" }], judge_prompt_sha256: "c".repeat(64), summary: { score: 89, coverage: 100, scoring: "decided/1" } };
+  const st = attestationFromScorecard(card, { issuer: TESTER, now });
+  assert.equal(st._type, STATEMENT_TYPE);
+  assert.equal(st.predicateType, "https://in-toto.io/attestation/test-result/v0.1");
+  assert.deepEqual(st.subject, [{ name: card.target.network_url, digest: { jcs_sha256: EXPECTED.network_sha256, sha256: "f".repeat(64) } }]);
+  assert.equal(st.predicate.result, "WARNED"); // one flaky test, none failed
+  assert.deepEqual(st.predicate.warnedTests, ["unknown_outcome"]);
+  assert.deepEqual(st.predicate.failedTests, []);
+  // Every configuration entry is a valid ResourceDescriptor (uri, digest or content).
+  for (const c of st.predicate.configuration) assert.ok(c.uri || c.digest || c.content, JSON.stringify(c));
+  const env = await signAttestation(st, TEST_KEY);
+  assert.equal(env.payloadType, "application/vnd.in-toto+json");
+  const ok = await verifyAttestation(env, { issuer: TESTER, jwks: JWKS, now, expect: { network_sha256: EXPECTED.network_sha256, minCoverage: 80 } });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.equal(ok.statement.format, "in-toto");
+  assert.equal(ok.statement.model.name, "alibaba/qwen3.8-flash");
+  assert.deepEqual(ok.statement.judges, ["deepseek/deepseek-v4.1-flash"]);
+  assert.equal(ok.statement.coverage, 100);
+  assert.deepEqual(ok.intoto, st);
+  assert.match((await verifyAttestation(env, { issuer: TESTER, jwks: JWKS, now, expect: { minCoverage: 101 } })).reason, /coverage 100 is below 101/);
+});
+
+test("legacy JWS attestations still verify, with the same summary shape", async () => {
+  const now = Date.parse("2026-11-17T12:00:00Z");
+  const legacy = { typ: ATTESTATION_TYPE, iss: TESTER, sub: SCORECARD.target.network_url, network_sha256: EXPECTED.network_sha256, model: { name: "m", router: "r" }, results: { static_validity: { verdict: "pass", pass_rate: 1 } }, score: 90, iat: new Date(now).toISOString(), exp: new Date(now + 864e5).toISOString() };
+  const jws = await signStatement(legacy, TEST_KEY);
+  const ok = await verifyAttestation(jws, { issuer: TESTER, jwks: JWKS, now, expect: { network_sha256: EXPECTED.network_sha256 } });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.equal(ok.statement.format, "jws-legacy");
+  assert.equal(ok.statement.score, 90);
+  assert.equal(ok.intoto, null);
+});
+
 test("attestations: issue, verify, and bind to the exact network hash", async () => {
   const now = Date.parse("2026-11-17T12:00:00Z");
   const statement = attestationFromScorecard(SCORECARD, { issuer: TESTER, now });
-  assert.equal(statement.exp, "2026-12-17T12:00:00.000Z");
+  assert.equal(statement.predicate.expiresAt, "2026-12-17T12:00:00.000Z");
   const jws = await signAttestation(statement, TEST_KEY);
   const ok = await verifyAttestation(jws, { issuer: TESTER, jwks: JWKS, now, expect: { network_sha256: EXPECTED.network_sha256, required: ["grounding_on_failure"], minScore: 80 } });
   assert.equal(ok.ok, true, ok.reason);
