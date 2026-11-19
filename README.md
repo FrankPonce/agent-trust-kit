@@ -87,6 +87,17 @@ an unexpired attestation for exactly that network hash, with score ≥ 80, cover
 test that failed outright (`DEFAULT_TRUST_POLICY`; pass your own `policy`). Partners linked at
 runtime by the visitor aren't in your network file, so they show as "not checked".
 
+It's what the live housing arbiter runs before it accepts a request
+([`src/arbiter/admission.js`](https://github.com/FrankPonce/taloyhtio-charging/blob/main/src/arbiter/admission.js)),
+so the consent card a visitor sees and the server that admits the caller decide the same way:
+
+```js
+import { checkNetwork, DEFAULT_TRUST_POLICY } from "agent-trust-kit/peer";
+
+const r = await checkNetwork("https://charge.example/charge_planner", { policy: DEFAULT_TRUST_POLICY });
+if (!r.trusted) refuse(r.attestation.reason || r.signature.reason);   // each refusal names its step
+```
+
 ## Attestation format
 
 ```jsonc
@@ -125,6 +136,19 @@ npx trust-kit sign-network site/my_net.network.json --name my_net --origin https
 npx trust-kit verify https://site.example/my_net   # OK / FAIL / UNSIGNED (a 404 or an HTML page = unsigned)
 npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer-trust.json
 ```
+
+## Limits
+
+- **Domain = identity.** A signature proves which domain published a network, not who runs
+  that domain: the same trust model as HTTPS.
+- **An attestation is only as good as the tester you trust.** The policy names trusted
+  testers by origin; the kit checks their signature, not their judgement.
+- **Covered: the network file and the manifest's declared actions.** The site's action code,
+  what an action actually does, and the live page are not covered.
+- **Opt-in.** The agentic-web runtime doesn't run these checks itself; a site or an arbiter
+  gets them by using the kit.
+- **No revocation or transparency log yet.** Attestations expire after 30 days; a withdrawn
+  one stays valid until then.
 
 ## Tests
 
