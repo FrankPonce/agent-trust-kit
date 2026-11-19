@@ -147,9 +147,12 @@ test("card wording: plain facts, warnings for anything not proven", async () => 
   const report = await peerTrustReport(`${SITE}/charge_planner`, { policy: POLICY, fetchImpl, now: NOW });
   const [good, bad, mcp] = report.peers.map(describePeer);
   assert.equal(good.level, "ok");
-  assert.equal(good.text, "✓ Signed by housing.example · ✓ tested 100/100 (coverage 100%) on qwen3.8-flash by tester.example; kept private details private");
+  assert.equal(good.text, "Signed by housing.example · tested 100/100 (coverage 100%) on qwen3.8-flash by tester.example; kept private details private");
+  assert.deepEqual(good.parts.map((p) => p.ok), [true, true], "each fact carries its own status; the card draws a tick for it");
   assert.equal(bad.level, "warn");
-  assert.equal(bad.text, "⚠ Not signed by its domain · ⚠ tested 81/100 but not vouched for");
+  assert.equal(bad.text, "Not signed by its domain · tested 81/100 but not vouched for");
+  assert.deepEqual(bad.parts.map((p) => p.ok), [false, false]);
+  assert.doesNotMatch(good.text + bad.text, /[✓⚠]/, "no text glyphs: icons are drawn");
   assert.match(bad.detail, /failed outright/);
   assert.match(mcp.text, /tool service/);
   assert.match(describePeer(null).text, /has not checked this partner/);

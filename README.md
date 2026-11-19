@@ -55,10 +55,12 @@ const who = await verifyRequest(signed, { allowedAgents: ["https://charge.exampl
 Before the runtime contacts another site's agent, it asks the visitor on a consent card.
 The card can now say what is known about that partner:
 
-> ✓ Signed by housing.example · ✓ tested 100/100 (coverage 100%) on qwen3.8-flash by
+> Signed by housing.example · tested 100/100 (coverage 100%) on qwen3.8-flash by
 > crashtest.example; kept private details private
 
-or *⚠ Not signed by its domain · ⚠ no test results from a tester this site trusts*.
+or *Not signed by its domain · no test results from a tester this site trusts*. Each fact
+gets a small drawn icon (a tick when it holds, a warning triangle when it doesn't), and the
+words alone carry the meaning, so the line still reads with no colour and no icons.
 
 The check runs on **your own server**, never in the visitor's browser, so nothing contacts the
 partner before the visitor agrees. Nothing changes in the runtime, in agent-to-agent messages,
