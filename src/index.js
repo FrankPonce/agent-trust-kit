@@ -11,3 +11,4 @@ export { signRequest, verifyRequest } from "./http.js";
 export {
   PEER_TRUST_TYPE, PEER_TRUST_PATH, DEFAULT_TRUST_POLICY, cachingFetch, isMcpRef, checkNetwork, peerTrustReport, peerTrustResponse, clearPeerTrustCache,
 } from "./peer.js";
+export { REKOR, REKOR_KEYS, ed25519Pem, logEnvelope, toLogEntry, rootFromInclusionProof, verifyCheckpoint, verifyLogEntry, logEntryUrl } from "./rekor.js";

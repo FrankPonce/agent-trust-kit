@@ -1,0 +1,44 @@
+{
+  "publicJwk": {
+    "crv": "Ed25519",
+    "x": "qxpUeBS6aRWUv8--gm_we7YvHOOMipWFwPWluJEXklo",
+    "kty": "OKP",
+    "kid": "o8x90BV1uCSqwd0oKCEbxU3lkZe1JyKek_Gui2z9_bw",
+    "alg": "EdDSA",
+    "use": "sig"
+  },
+  "envelope": {
+    "payloadType": "application/vnd.in-toto+json",
+    "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoiaHR0cHM6Ly9leGFtcGxlLmludmFsaWQvYWdlbnQtdHJ1c3Qta2l0LXRlc3QiLCJkaWdlc3QiOnsic2hhMjU2IjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL2FnZW50LXRydXN0LWtpdC5pbnZhbGlkL3Rlc3QvdjEiLCJwcmVkaWNhdGUiOnsibm90ZSI6ImFnZW50LXRydXN0LWtpdCB0ZXN0IHZlY3RvciBmb3IgUmVrb3Igc3RhZ2luZyIsImF0IjoiMjAyNi0xMS0xOVQxMzo0NDowNy41MzRaIn19",
+    "signatures": [
+      {
+        "keyid": "o8x90BV1uCSqwd0oKCEbxU3lkZe1JyKek_Gui2z9_bw",
+        "sig": "PZoG9IXfau47Ph+QhyV09NB26ra+MUds81ABHG8g5FmbgDoaiH+SZnMjeYFi2BeeoYsztIivQMBRZmdvSZYwBQ=="
+      }
+    ]
+  },
+  "entry": {
+    "log": "https://rekor.sigstage.dev",
+    "uuid": "71d46696179fcd5dead3ef16978af51cbbba76f89635f32f0a0f6e84154d272c3269b1912a27f062",
+    "logIndex": 56989584,
+    "logID": "d32f30a3c32d639c2b762205a21c7bb07788e68283a4ae6f42118723a1bea496",
+    "integratedTime": 1795095847,
+    "body": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiZHNzZSIsInNwZWMiOnsiZW52ZWxvcGVIYXNoIjp7ImFsZ29yaXRobSI6InNoYTI1NiIsInZhbHVlIjoiOWE1MjBjNWRjYWE3NjdiYmJmYmIyNTFkNDA3MjU4NTZlYjM4NGY0OGJiNmJlNjVlYzExODRhNzQ2OWNmOTVmYyJ9LCJwYXlsb2FkSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6ImNkOGZjYzJlMDFmYWRjYTgzZTVjZDMxNzliNTQxNTFlZjAxMThhODkyYmI1ZWEwY2ZkOWU0MTk4NjIyNDEzMDQifSwic2lnbmF0dXJlcyI6W3sic2lnbmF0dXJlIjoiUFpvRzlJWGZhdTQ3UGgrUWh5VjA5TkIyNnJhK01VZHM4MUFCSEc4ZzVGbWJnRG9haUgrU1puTWplWUZpMkJlZW9Zc3p0SWl2UU1CUlptZHZTWll3QlE9PSIsInZlcmlmaWVyIjoiTFMwdExTMUNSVWRKVGlCUVZVSk1TVU1nUzBWWkxTMHRMUzBLVFVOdmQwSlJXVVJMTWxaM1FYbEZRWEY0Y0ZWbFFsTTJZVkpYVlhZNEt5dG5iUzkzWlRkWmRraFBUMDFwY0ZkR2QxQlhiSFZLUlZocmJHODlDaTB0TFMwdFJVNUVJRkJWUWt4SlF5QkxSVmt0TFMwdExRbz0ifV19fQ==",
+    "inclusionProof": {
+      "checkpoint": "rekor.sigstage.dev - 8202293616175992157\n25307173\nZNIN01a6WdIV4I3Fv5A8fP0RiY8YSzAfYFCek/YRJOc=\n\n— rekor.sigstage.dev 0y8wozBGAiEArePTYF06EYyDWciA0K/RNqJIBekhXLJAUkGn2xtn7pMCIQCrOLhbrC0lplvyg16k8i4vcNF2xGm1/VrTrV8eOx3SWA==\n",
+      "hashes": [
+        "e52656017482e92083cf4e21a949618452cbb0d7a426d24824b3a83b90b72a73",
+        "3742708d0f68ec328629764572803d7525b2d2df886b902bf8acb5d573aa4cb8",
+        "e4edefae6e7f42702abe13d8a4da0a69b6b900e456b5b99e3fc0b7a85c289237",
+        "fee69393d8d635cab6aa6d37fd289742dd3550cffa479134cbb90301742dea5c",
+        "96f9b3ded343ea0310003616d07fb688c9284b2b363796617732d3a639a51027",
+        "98e389669b5ec72e2f88cb2dfef2bc229be624b0c241e37e0a28e920a859fbca",
+        "06b8d8b18be8eb97530d628ef1a634b3ef566961e555d66e384cec0472c77bc5"
+      ],
+      "logIndex": 25307172,
+      "rootHash": "64d20dd356ba59d215e08dc5bf903c7cfd11898f184b301f60509e93f61124e7",
+      "treeSize": 25307173
+    },
+    "signedEntryTimestamp": "MEYCIQC6k8v5HYSvZuP07ugoLixCTERoo6nIf5RmJVEqE3XS1QIhAPdhLoryyyCB/iMNTpGttu+Pf1bNH0FclzAEaFEe4L6t"
+  }
+}

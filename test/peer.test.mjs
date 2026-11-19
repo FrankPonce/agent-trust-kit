@@ -221,3 +221,13 @@ test("actions subject: in the statement, in the summary, and checked by verifyAt
   const other = await verifyAttestation(env, { issuer: TESTER, jwks, now: NOW, expect: { actions_sha256: await actionsSha256({ actions: { agentTools: ["a", "b"] } }) } });
   assert.match(other.reason, /different set of site actions/);
 });
+
+test("transparency log: off by default; when required, an attestation not on a log is refused", async () => {
+  const { fetchImpl } = await web();
+  const plain = await checkNetwork(`${GOOD}/housing`, { policy: POLICY, fetchImpl, now: NOW });
+  assert.equal(plain.trusted, true, "not required: no change for testers that don't log");
+  assert.equal(plain.attestation.log, undefined);
+  const strict = await checkNetwork(`${GOOD}/housing`, { policy: { ...POLICY, requireLog: true }, fetchImpl, now: NOW });
+  assert.equal(strict.trusted, false);
+  assert.match(strict.attestation.reason, /not on a public transparency log/);
+});

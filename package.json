@@ -28,7 +28,8 @@
     "./http": "./src/http.js",
     "./dsse": "./src/dsse.js",
     "./peer": "./src/peer.js",
-    "./peer-card": "./src/peer-card.js"
+    "./peer-card": "./src/peer-card.js",
+    "./rekor": "./src/rekor.js"
   },
   "files": [
     "src",

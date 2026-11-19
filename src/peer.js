@@ -10,6 +10,7 @@
 import { canonicalHash } from "./canonical.js";
 import { actionsSha256, verifyAttestation } from "./attestation.js";
 import { fetchSignature, signatureUrl, verifyNetwork } from "./network.js";
+import { REKOR, verifyLogEntry } from "./rekor.js";
 
 export const PEER_TRUST_TYPE = "peer-trust/v1";
 export const PEER_TRUST_PATH = "/.well-known/peer-trust.json";
@@ -25,6 +26,10 @@ export const DEFAULT_TRUST_POLICY = Object.freeze({
   // The attestation must also cover the site's declared actions as published now (F39),
   // unless a policy sets this to false.
   bindActions: true,
+  // Require the attestation to be on a public transparency log (Sigstore Rekor production by
+  // default; `logs` lists accepted log URLs). Off by default: a log entry, when published, is
+  // always checked and reported, but not yet required.
+  requireLog: false,
 });
 
 /**
@@ -167,7 +172,14 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
       const results = Object.fromEntries(Object.entries(s.results || {}).map(([id, r]) => [id, r?.verdict ?? null]));
       const failed = Object.entries(results).filter(([, verdict]) => verdict === "fail").map(([id]) => id);
       const facts = { iss: s.iss, score: s.score, coverage: s.coverage ?? null, model: s.model?.name ?? null, exp: s.exp, test_version: s.test_version ?? null, failed, results };
+      // Public transparency log entry, when the tester published one: checked, not trusted.
+      if (a.log?.entry) facts.log = await checkLog(signed, a.log, t.origin, fetchImpl);
       const misses = [];
+      if (policy.requireLog) {
+        const logs = policy.logs ?? [REKOR.production];
+        if (!facts.log?.ok) misses.push(`not on a public transparency log${facts.log?.reason ? ` (${facts.log.reason})` : ""}`);
+        else if (!logs.includes(facts.log.url)) misses.push(`logged only on ${facts.log.url}, not on an accepted log`);
+      }
       if (Number.isFinite(policy.minScore) && !(s.score >= policy.minScore)) misses.push(`score ${s.score} is below ${policy.minScore}`);
       if (Number.isFinite(policy.minCoverage) && !(s.coverage >= policy.minCoverage)) misses.push(`coverage ${s.coverage ?? "unknown"} is below ${policy.minCoverage}`);
       if (policy.noFailedTests !== false && failed.length) misses.push(`failed outright: ${failed.join(", ")} (score ${s.score})`);
@@ -180,6 +192,17 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
     }
   }
   return { ok: false, ...(shown ?? { failed: [], results: {} }), reason: problems.length ? problems.join("; ") : "no attestation found" };
+}
+
+/** Fetch an attestation's published log entry and verify it offline against the envelope. */
+async function checkLog(signed, log, testerOrigin, fetchImpl) {
+  try {
+    const entry = await getJson(new URL(log.entry, `${testerOrigin}/`).href, fetchImpl);
+    const v = await verifyLogEntry(signed, entry);
+    return v.ok ? { ok: true, url: v.log, logIndex: v.logIndex, integratedTime: v.integratedTime } : { ok: false, url: log.url, reason: v.reason };
+  } catch (error) {
+    return { ok: false, url: log.url, reason: error.message };
+  }
 }
 
 const reports = new Map(); // siteNetworkUrl -> {at, body}; per process or isolate

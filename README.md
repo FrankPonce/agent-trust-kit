@@ -128,6 +128,29 @@ if (!r.trusted) refuse(r.attestation.reason || r.signature.reason);   // each re
   tester's RFC 7638 key thumbprint, found in its key directory.
 - Older compact-JWS attestations (`agent-network-attestation/v1`) still verify.
 
+## Transparency log (Sigstore Rekor)
+
+A signed attestation proves who vouched for a network. A **log entry** also proves *when*, and
+that the tester can't quietly swap or withdraw what it published: the envelope's signature
+and payload hash go on [Sigstore's](https://www.sigstore.dev/) public, append-only Rekor log.
+
+```js
+import { logEnvelope, verifyLogEntry, REKOR } from "agent-trust-kit/rekor";
+
+const entry = await logEnvelope(envelope, testerPublicJwk, { rekorUrl: REKOR.production }); // publish next to the attestation
+const v = await verifyLogEntry(envelope, entry);   // offline: same envelope, in the tree, root signed by Rekor
+```
+
+`verifyLogEntry` needs no network: it checks that the entry carries this envelope's payload
+hash and signature (and, if given, the expected signer), recomputes the RFC 9162 inclusion
+proof up to the logged tree root, and checks Rekor's signature on that root with Rekor's
+key, pinned in the kit (`REKOR_KEYS`). A tester lists the entry in its index (`log` field);
+`checkNetwork` then checks it and reports it, and a policy can require it:
+`{ ...DEFAULT_TRUST_POLICY, requireLog: true }` (production Rekor by default, or `logs: [...]`).
+
+Rekor v1 `dsse` entries are used because they keep the tester's existing Ed25519 signature;
+Rekor v2 accepts neither the dsse type nor pure Ed25519. Entries are public and permanent.
+
 ## CLI
 
 ```bash
@@ -147,8 +170,10 @@ npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer
   what an action actually does, and the live page are not covered.
 - **Opt-in.** The agentic-web runtime doesn't run these checks itself; a site or an arbiter
   gets them by using the kit.
-- **No revocation or transparency log yet.** Attestations expire after 30 days; a withdrawn
-  one stays valid until then.
+- **No revocation.** Attestations expire after 30 days; a withdrawn one stays valid until
+  then. The transparency log makes changes visible, it doesn't revoke.
+- **Pinned log keys.** Rekor's keys are pinned in the kit; if Sigstore rotates them, the
+  kit needs an update (Sigstore's TUF root is the authoritative source).
 
 ## Tests
 
