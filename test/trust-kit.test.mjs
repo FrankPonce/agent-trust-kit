@@ -235,3 +235,47 @@ test("attestations count judged runs and, separately, text-only fails the judges
   const { attestationSummary } = await import("../src/index.js");
   assert.deepEqual(attestationSummary(s).results.false_confirmation, { verdict: "pass", pass_rate: 1, judged_runs: 2, cleared_runs: 1 });
 });
+
+test("verifyRequest: refuses old or long-lived signatures, http agents, and a replay when the receiver keeps a store", async () => {
+  const signed = await signRequest(REQ, { privateJwk: TEST_KEY, signatureAgent: AGENT });
+  assert.equal((await verifyRequest(signed, { jwks: JWKS })).ok, true);
+  assert.match((await verifyRequest(signed, { jwks: JWKS, now: Date.now() + 20 * 60_000 })).reason, /older than 300 seconds/);
+  const longLived = await signRequest(REQ, { privateJwk: TEST_KEY, signatureAgent: AGENT, expiresIn: 86_400 });
+  assert.match((await verifyRequest(longLived, { jwks: JWKS })).reason, /valid for more than 300 seconds/);
+  const plainHttp = { ...signed, headers: { ...signed.headers, "signature-agent": '"http://charge.example"' } };
+  assert.match((await verifyRequest(plainHttp, { jwks: JWKS })).reason, /not an https origin/);
+  const seen = new Set();
+  const isReplay = async (sig) => (seen.has(sig) ? true : (seen.add(sig), false));
+  assert.equal((await verifyRequest(signed, { jwks: JWKS, isReplay })).ok, true);
+  assert.match((await verifyRequest(signed, { jwks: JWKS, isReplay })).reason, /already used/);
+});
+
+test("fetching others' files: size cap, network file on the site's own origin, bounded cache", async () => {
+  const { readLimited, cachingFetch, checkNetwork } = await import("../src/peer.js");
+  await assert.rejects(readLimited(new Response("x".repeat(50)), 10), /larger than 10 bytes/);
+  await assert.rejects(readLimited(new Response("{}", { headers: { "content-length": "99999999" } })), /larger than/);
+  const elsewhere = async (url) => (String(url).endsWith("/agent-manifest.json")
+    ? new Response(JSON.stringify({ networks: [{ name: "n", hocon: "https://internal.example/n.json" }] }))
+    : new Response("{}"));
+  const r = await checkNetwork("https://site.example/n", { fetchImpl: elsewhere });
+  assert.match(r.error, /points its network at another origin \(https:\/\/internal\.example\)/);
+  const cache = new Map();
+  const f = cachingFetch(async (u) => new Response(String(u)), { cache, maxEntries: 3 });
+  for (const i of [1, 2, 3, 4, 5]) await f(`https://a.example/${i}`);
+  assert.equal(cache.size, 3);
+  assert.ok(![...cache.keys()].some((k) => k.endsWith("/1")), "the oldest went first");
+});
+
+test("peerTrustResponse: a report made for one model or policy never answers for another", async () => {
+  const { peerTrustResponse, clearPeerTrustCache } = await import("../src/peer.js");
+  clearPeerTrustCache();
+  let calls = 0;
+  const files = { "https://site.example/agent-manifest.json": { networks: [{ name: "n", hocon: "./n.json" }] }, "https://site.example/n.json": { tools: [{ name: "f", tools: [] }] } };
+  const fetchImpl = async (url) => { calls += 1; return files[String(url)] ? new Response(JSON.stringify(files[String(url)])) : new Response("not found", { status: 404 }); };
+  await peerTrustResponse("https://site.example/n", { fetchImpl, models: ["a"] });
+  const afterA = calls;
+  await peerTrustResponse("https://site.example/n", { fetchImpl, models: ["a"] });
+  assert.equal(calls, afterA, "same configuration: cached");
+  await peerTrustResponse("https://site.example/n", { fetchImpl, models: ["b"] });
+  assert.ok(calls > afterA, "another model: checked again");
+});

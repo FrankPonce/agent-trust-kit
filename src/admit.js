@@ -17,9 +17,9 @@
 
 import { verifyRequest } from "./http.js";
 import { DEFAULT_TRUST_POLICY, checkNetwork } from "./peer.js";
-import { MODEL_META, declaredModel } from "./model.js";
+import { MODEL_META, NETWORK_META, declaredModel, declaredNetwork } from "./model.js";
 
-export { MODEL_META, declaredModel, declareModel } from "./model.js";
+export { MODEL_META, NETWORK_META, declaredModel, declareModel, declaredNetwork, declareNetwork } from "./model.js";
 
 /**
  * The default admission policy: the kit's trust policy, and the caller must declare its model.
@@ -54,7 +54,14 @@ export async function admit(request, { policy = DEFAULT_ADMIT_POLICY, fetchImpl 
     return refuse("model", `The request does not say which model ran ${agent}'s agent (params._meta["${MODEL_META}"]). Trust depends on the network and the model, so both are needed.`, { agent });
   }
 
-  const r = await checkNetwork({ origin: agent }, { policy, fetchImpl, now, jwks, models: model ? [model] : null });
+  // Which network: the one the caller declares (on its own origin), or the only one it
+  // publishes. A domain with several networks must say which, so the decision never depends
+  // on the order of its manifest.
+  const network = declaredNetwork(request.body);
+  if (network && new URL(network).origin !== agent) {
+    return refuse("network", `The request declares ${network}, which is not on ${agent}, the domain that signed it.`, { agent });
+  }
+  const r = await checkNetwork(network ?? { origin: agent, single: true }, { policy, fetchImpl, now, jwks, models: model ? [model] : null });
   const { network_url } = r;
   if (r.error) return refuse("network", `${r.error}.`, { agent, network_url });
   if (r.signature.status === "unsigned") return refuse("network", `${network_url} is not signed by its domain (no signature file).`, { agent, network_url });

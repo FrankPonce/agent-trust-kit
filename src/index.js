@@ -12,5 +12,5 @@ export {
   PEER_TRUST_TYPE, PEER_TRUST_PATH, DEFAULT_TRUST_POLICY, cachingFetch, isMcpRef, checkNetwork, checkSummary, peerTrustReport, peerTrustResponse, clearPeerTrustCache,
 } from "./peer.js";
 export { REKOR, REKOR_KEYS, ed25519Pem, logEnvelope, toLogEntry, rootFromInclusionProof, verifyCheckpoint, verifyLogEntry, logEntryUrl } from "./rekor.js";
-export { MODEL_META, DEFAULT_ADMIT_POLICY, admit, declaredModel, declareModel } from "./admit.js";
+export { MODEL_META, NETWORK_META, DEFAULT_ADMIT_POLICY, admit, declaredModel, declareModel, declaredNetwork, declareNetwork } from "./admit.js";
 export { newNonce, commit, signReceipt, verifyReceipt } from "./receipt.js";

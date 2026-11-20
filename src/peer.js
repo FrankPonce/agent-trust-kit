@@ -23,6 +23,10 @@ export const DEFAULT_TRUST_POLICY = Object.freeze({
   // An average can hide a critical failure (crash-test FINDINGS F45): refuse any network
   // with a test that failed outright, unless a policy sets this to false.
   noFailedTests: true,
+  // Tests that guard an irreversible action or a secret must be in the attestation and pass
+  // (or not apply): flaky or unclear is not enough for these, whatever the average. Ids are
+  // crash-test's; set your own for another tester or a different operation.
+  critical: Object.freeze(["tool_result_injection", "false_confirmation", "unknown_outcome", "key_exfiltration"]),
   // The attestation must also cover the site's declared actions as published now (F39),
   // unless a policy sets this to false.
   bindActions: true,
@@ -39,7 +43,7 @@ export const DEFAULT_TRUST_POLICY = Object.freeze({
  * :param opts: {cache: a Map to keep entries in, ttlMs (default 5 min), now: () => ms}.
  * :return: A fetch-compatible function; each call returns a fresh Response.
  */
-export function cachingFetch(fetchImpl, { cache = new Map(), ttlMs = 5 * 60_000, now = () => Date.now() } = {}) {
+export function cachingFetch(fetchImpl, { cache = new Map(), ttlMs = 5 * 60_000, now = () => Date.now(), maxEntries = 500 } = {}) {
   return async (url, init = {}) => {
     const key = `${init.redirect ?? "follow"} ${String(url)}`;
     const hit = cache.get(key);
@@ -47,17 +51,62 @@ export function cachingFetch(fetchImpl, { cache = new Map(), ttlMs = 5 * 60_000,
     const resp = await fetchImpl(url, init);
     // Opaque redirects (status 0) can't be rebuilt; pass them through uncached.
     if (!(resp.status >= 200 && resp.status < 600)) return resp;
-    const body = await resp.text();
+    const body = await readLimited(resp);
     const entry = { at: now(), status: resp.status, headers: [...resp.headers], body };
-    if (resp.ok) cache.set(key, entry);
+    if (resp.ok) {
+      cache.delete(key);
+      cache.set(key, entry);
+      // Bounded: the oldest entries go first (a Map keeps insertion order).
+      while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
+    }
     return new Response(body, { status: entry.status, headers: entry.headers });
   };
 }
 
+/** Limits on fetching other sites' public files: a slow or huge answer is a refusal, not a hang. */
+export const FETCH_LIMITS = Object.freeze({ timeoutMs: 8000, maxBytes: 1_000_000 });
+
+/** Fetch with a deadline. */
+async function limitedFetch(fetchImpl, url, init = {}) {
+  const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(FETCH_LIMITS.timeoutMs) : undefined;
+  return fetchImpl(url, { ...(signal ? { signal } : {}), ...init });
+}
+
+/** Read a response body, refusing more than maxBytes (by Content-Length, then while reading). */
+export async function readLimited(resp, maxBytes = FETCH_LIMITS.maxBytes) {
+  const tooBig = () => new Error(`${resp.url || "the answer"} is larger than ${maxBytes} bytes`);
+  if (Number(resp.headers?.get?.("content-length") || 0) > maxBytes) throw tooBig();
+  if (!resp.body?.getReader) {
+    const text = await resp.text();
+    if (text.length > maxBytes) throw tooBig();
+    return text;
+  }
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw tooBig();
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.length;
+  }
+  return new TextDecoder().decode(all);
+}
+
 async function getJson(url, fetchImpl, init = {}) {
-  const resp = await fetchImpl(url, { headers: { accept: "application/json" }, ...init });
+  const resp = await limitedFetch(fetchImpl, url, { headers: { accept: "application/json" }, ...init });
   if (!resp.ok) throw new Error(`${url} answered ${resp.status}`);
-  const text = await resp.text();
+  const text = await readLimited(resp);
   try {
     return JSON.parse(text);
   } catch {
@@ -108,13 +157,22 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
   let actions_sha256;
   try {
     const manifest = await getJson(new URL("agent-manifest.json", base).href, fetchImpl);
+    if (!name && target?.single && (manifest?.networks?.length ?? 0) > 1) {
+      return { trusted: false, origin, network_url, error: `${origin} publishes ${manifest.networks.length} networks; the request must declare which one made it ("agent-trust-kit/network")` };
+    }
     const entry = name ? manifest?.networks?.find((n) => n?.name === name) : manifest?.networks?.[0];
     if (!entry?.name || !entry?.hocon) {
       return { trusted: false, origin, network_url, error: name ? `${origin} publishes no network named ${name} in agent-manifest.json` : `${origin} publishes no agent network in agent-manifest.json` };
     }
     name = entry.name;
     network_url = new URL(encodeURIComponent(name), base).href;
-    network = await getJson(new URL(entry.hocon, base).href, fetchImpl);
+    // The network file must be on the site's own origin: a manifest can't send the checker
+    // (an arbiter's server) to fetch from anywhere else.
+    const networkFile = new URL(entry.hocon, base);
+    if (networkFile.origin !== origin) {
+      return { trusted: false, origin, network_url, error: `${origin}'s manifest points its network at another origin (${networkFile.origin})` };
+    }
+    network = await getJson(networkFile.href, fetchImpl);
     network_sha256 = await canonicalHash(network);
     actions_sha256 = await actionsSha256(manifest);
   } catch (error) {
@@ -145,7 +203,7 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
 
 async function bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now, models = null }) {
   const problems = [];
-  let shown = null; // a verified attestation that misses the policy, to show honestly
+  const valid = []; // verified attestations for this network, actions and an accepted model
   for (const t of policy.testers || []) {
     let index;
     try {
@@ -165,14 +223,15 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
     for (const a of candidates) {
       let signed;
       try {
-        const resp = await fetchImpl(new URL(a.attestation ?? a.jws, `${t.origin}/`).href);
+        const resp = await limitedFetch(fetchImpl, new URL(a.attestation ?? a.jws, `${t.origin}/`).href);
         if (!resp.ok) throw new Error(`${resp.url || a.attestation} answered ${resp.status}`);
-        signed = (await resp.text()).trim();
+        signed = (await readLimited(resp)).trim();
       } catch (error) {
         problems.push(error.message);
         continue;
       }
-      const v = await verifyAttestation(signed, { issuer: t.origin, fetchImpl, now, expect: { sub: network_url, network_sha256, ...(policy.bindActions !== false ? { actions_sha256 } : {}) } });
+      const actions_subject = `${new URL("agent-manifest.json", network_url).href}#actions`;
+      const v = await verifyAttestation(signed, { issuer: t.origin, fetchImpl, now, expect: { sub: network_url, network_sha256, ...(policy.bindActions !== false ? { actions_sha256, actions_subject } : {}) } });
       if (!v.ok) {
         problems.push(v.reason);
         continue;
@@ -199,12 +258,32 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
       for (const id of policy.required || []) {
         if (results[id] !== "pass") misses.push(`required test ${id} did not pass (${results[id] ?? "missing"})`);
       }
-      if (!misses.length) return { ok: true, ...facts };
-      problems.push(misses.join("; "));
-      shown ??= facts;
+      // Critical tests must be in the attestation and pass (or not apply to this network):
+      // flaky, unclear or missing is not enough for them, whatever the average.
+      for (const id of policy.critical || []) {
+        if (results[id] !== "pass" && results[id] !== "not_applicable") misses.push(`critical test ${id} is ${results[id] ?? "missing"}`);
+      }
+      valid.push({ facts, misses, rank: rank({ model: s.model?.name }), iat: Date.parse(s.iat) });
     }
   }
-  return { ok: false, ...(shown ?? { failed: [], results: {} }), reason: problems.length ? problems.join("; ") : "no attestation found" };
+  // The newest evidence decides. Among valid attestations for this network, these actions and
+  // the preferred model, the most recently issued one counts, so a newer failure supersedes an
+  // older pass (a re-test is how a tester withdraws its vouching before expiry).
+  if (valid.length) {
+    // Per model, only the newest counts; then the preferred model whose current evidence holds.
+    const byModel = new Map();
+    for (const x of valid) {
+      const prev = byModel.get(x.facts.model);
+      if (!prev || x.iat > prev.iat) byModel.set(x.facts.model, x);
+    }
+    const current = [...byModel.values()].sort((x, y) => x.rank - y.rank || x.misses.length - y.misses.length);
+    const pass = current.find((x) => !x.misses.length);
+    if (pass) return { ok: true, ...pass.facts };
+    const shown = current[0];
+    const older = valid.some((x) => x !== shown && x.facts.model === shown.facts.model && !x.misses.length);
+    return { ok: false, ...shown.facts, reason: `${shown.misses.join("; ")}${older ? " (an older passing attestation is superseded by this newer one)" : ""}` };
+  }
+  return { ok: false, failed: [], results: {}, reason: problems.length ? problems.join("; ") : "no attestation found" };
 }
 
 /** Fetch an attestation's published log entry and verify it offline against the envelope. */
@@ -230,11 +309,15 @@ const reports = new Map(); // siteNetworkUrl -> {at, body}; per process or isola
  */
 export async function peerTrustResponse(siteNetworkUrl, { ttlMs = 5 * 60_000, ...opts } = {}) {
   const now = opts.now ?? Date.now();
-  let hit = reports.get(siteNetworkUrl);
+  // One report per site, model list and policy: a report made under one configuration must
+  // never answer for another.
+  const key = JSON.stringify([siteNetworkUrl, opts.models ?? null, opts.policy ?? null]);
+  let hit = reports.get(key);
   if (!hit || now - hit.at >= ttlMs) {
     const fetchImpl = cachingFetch(opts.fetchImpl ?? globalThis.fetch, { ttlMs, now: () => now });
     hit = { at: now, body: JSON.stringify(await peerTrustReport(siteNetworkUrl, { ...opts, now, fetchImpl })) };
-    reports.set(siteNetworkUrl, hit);
+    reports.set(key, hit);
+    while (reports.size > 100) reports.delete(reports.keys().next().value);
   }
   return new Response(hit.body, {
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": `public, max-age=${Math.floor(ttlMs / 1000)}` },

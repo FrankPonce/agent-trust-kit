@@ -153,6 +153,7 @@ export function attestationSummary(statement) {
     network_sha256: subject.digest?.jcs_sha256 ?? null,
     network_file_sha256: subject.digest?.sha256 ?? null,
     actions_sha256: (statement.subject || []).find((x) => x?.name?.endsWith(ACTIONS_SUBJECT_SUFFIX))?.digest?.jcs_sha256 ?? null,
+    actions_subject: (statement.subject || []).find((x) => x?.name?.endsWith(ACTIONS_SUBJECT_SUFFIX))?.name ?? null,
     model: { name: model?.annotations?.model ?? null, router: host(model?.uri) },
     test_version: suite.testVersion ?? null,
     scoring: suite.scoring ?? null,
@@ -169,6 +170,29 @@ export function attestationSummary(statement) {
 }
 
 const looksLikeJws = (x) => typeof x === "string" && !x.trim().startsWith("{") && x.trim().split(".").length === 3;
+
+/** Longest validity an attestation may claim. crash-test issues 30 days. */
+export const MAX_ATTESTATION_DAYS = 90;
+const VERDICTS = new Set(["pass", "fail", "flaky", "inconclusive", "not_applicable", "skipped", "error"]);
+const HEX64 = /^[0-9a-f]{64}$/;
+const pct = (x) => x === null || x === undefined || (typeof x === "number" && x >= 0 && x <= 100);
+
+/** What is wrong with a summary's signed fields, or null. */
+function schemaProblem(s) {
+  const iat = Date.parse(s.iat);
+  const exp = Date.parse(s.exp);
+  if (!Number.isFinite(iat)) return `has no valid issue date (${s.iat})`;
+  if (!Number.isFinite(exp)) return `has no valid expiry date (${s.exp})`;
+  if (exp <= iat) return "expires before it was issued";
+  if (exp - iat > MAX_ATTESTATION_DAYS * 864e5) return `claims validity for more than ${MAX_ATTESTATION_DAYS} days`;
+  if (!HEX64.test(String(s.network_sha256))) return "has no valid network digest";
+  if (s.actions_sha256 !== null && !HEX64.test(String(s.actions_sha256))) return "has an invalid actions digest";
+  if (!pct(s.score) || !pct(s.coverage)) return "has a score or coverage outside 0-100";
+  for (const [id, r] of Object.entries(s.results || {})) {
+    if (!VERDICTS.has(r?.verdict)) return `has an unknown verdict for ${id}`;
+  }
+  return null;
+}
 
 /**
  * Verify an attestation: a DSSE envelope (object or JSON text), or a legacy compact JWS.
@@ -201,8 +225,16 @@ export async function verifyAttestation(attestation, { issuer, jwks = null, fetc
   }
   const fail = (reason) => ({ ok: false, reason, statement: s });
   if (issuer && s.iss !== new URL(issuer).origin) return fail(`issued by ${s.iss}, not ${new URL(issuer).origin}`);
-  if (!s.exp || Date.parse(s.exp) <= now) return fail(`expired on ${s.exp}`);
-  if (Date.parse(s.iat) > now + 5 * 60 * 1000) return fail("issued in the future");
+  // The signed content must make sense before any of it is trusted: a signature over a
+  // malformed date or score is still a malformed claim (an unparseable expiry used to pass,
+  // because comparisons with NaN are false).
+  const problem = schemaProblem(s);
+  if (problem) return fail(problem);
+  const iat = Date.parse(s.iat);
+  const exp = Date.parse(s.exp);
+  if (exp <= now) return fail(`expired on ${s.exp}`);
+  if (iat > now + 5 * 60 * 1000) return fail("issued in the future");
+  if (expect.actions_subject && s.actions_subject && s.actions_subject !== expect.actions_subject) return fail(`binds the actions of ${s.actions_subject}, not ${expect.actions_subject}`);
   if (expect.network_sha256 && s.network_sha256 !== expect.network_sha256) return fail("attests a different version of the network");
   if (expect.sub && s.sub !== expect.sub) return fail(`attests ${s.sub}, not ${expect.sub}`);
   if (expect.actions_sha256) {

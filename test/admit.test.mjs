@@ -147,3 +147,21 @@ test("signRequest({ model }) declares the model inside the signed body, and admi
   assert.deepEqual(JSON.parse(declareModel(JSON.stringify({ params: { _meta: { a: 1 } } }), "m")).params._meta, { a: 1, [MODEL_META]: "m" });
   assert.equal(declareModel(plain, ""), plain);
 });
+
+test("a domain with several networks must declare which one made the request; manifest order never decides", async () => {
+  const { NETWORK_META } = await import("../src/index.js");
+  const w = await world();
+  // Add a second, unattested network to the caller's manifest, listed FIRST.
+  const base = w.fetchImpl;
+  const manifest = { networks: [{ name: "other", front_man: "x", hocon: "./other.network.json" }, { name: "charge_planner", front_man: "charge_assistant", hocon: "./charge_planner.network.json" }], actions: ACTIONS };
+  const fetchImpl = async (url) => (String(url) === `${CALLER}/agent-manifest.json` ? new Response(JSON.stringify(manifest)) : base(url));
+  const undeclared = await admit(await asPlain(await w.signed(BODY)), { policy: POLICY, fetchImpl, now: NOW });
+  assert.equal(undeclared.ok, false);
+  assert.match(undeclared.reason, /publishes 2 networks; the request must declare which one/);
+  const withNet = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { _meta: { [MODEL_META]: MODEL, [NETWORK_META]: `${CALLER}/charge_planner` } } });
+  const declared = await admit(await asPlain(await w.signed(withNet)), { policy: POLICY, fetchImpl, now: NOW });
+  assert.equal(declared.ok, true, declared.reason);
+  assert.equal(declared.network_url, `${CALLER}/charge_planner`);
+  const foreign = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { _meta: { [MODEL_META]: MODEL, [NETWORK_META]: "https://elsewhere.example/net" } } });
+  assert.match((await admit(await asPlain(await w.signed(foreign)), { policy: POLICY, fetchImpl, now: NOW })).reason, /not on https:\/\/charge\.example, the domain that signed it/);
+});

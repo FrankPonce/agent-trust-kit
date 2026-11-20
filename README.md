@@ -51,6 +51,9 @@ const signed = await signRequest({ method: "POST", url, headers: {}, body }, {
 // Your server: signature → declared model → domain-signed network → attestation for that model.
 const d = await admit(request, { fetchImpl: cachingFetch(fetch) });
 if (!d.ok) return refuse(d.step, d.reason);   // "signature" | "model" | "network" | "attestation"
+
+// A domain with several networks must also declare which one made the request:
+//   signRequest(req, { ..., network: "https://caller.site/my_net" })
 ```
 
 Admission is not authorization. It says who is calling and how its agent was tested; what the
@@ -256,14 +259,21 @@ npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer
   the caller signs into its request; nobody can prove which model ran in a visitor's browser.
   It stops a site presenting a test on a strong model for a session on a weak one, not a site
   that lies outright.
+- **What the default policy requires.** Signature by the network's own domain; an attestation
+  for that exact network, its declared actions and the declared model; score ≥ 80, coverage ≥
+  80, no failed test, and the critical tests (`critical`: injection, false confirmation,
+  unknown outcome, key exfiltration) passed or not applicable. Request signatures older or
+  longer-lived than 5 minutes are refused; pass `isReplay` to accept each one only once. Other
+  sites' files are fetched with an 8-second deadline and a 1 MB cap, and a network file must
+  sit on its site's own origin.
 - **Admission is not authorization.** A signed, well-tested caller can still ask for something
   it shouldn't; the receiving service checks what each request may do (the person's code,
   their sealed mandate, its own rules).
 - **Opt-in.** The agentic-web runtime doesn't run these checks itself; a site or an arbiter
   gets them by using the kit.
-- **No revocation.** Attestations expire after 30 days; a withdrawn one stays valid until
-  then. The transparency log makes changes visible, it doesn't revoke.
-- **Pinned log keys.** Rekor's keys are pinned in the kit; if Sigstore rotates them, the
+- **Withdrawing is re-testing.** For each network and model, the newest valid attestation
+  decides, so a tester withdraws its vouching by publishing a newer result. There is no
+  separate revocation list, and until a re-test an attestation stays valid until it expires.
   kit needs an update (Sigstore's TUF root is the authoritative source).
 
 ## Tests

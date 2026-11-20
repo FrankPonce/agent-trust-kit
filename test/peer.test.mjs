@@ -26,7 +26,7 @@ beforeEach(() => clearPeerTrustCache());
 
 const GOOD_ACTIONS = { version: 1, agentTools: ["get_rules"] };
 
-async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing"), servedActions = GOOD_ACTIONS, bindActions = true, secondModel = null } = {}) {
+async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing"), servedActions = GOOD_ACTIONS, bindActions = true, secondModel = null, retest = null } = {}) {
   const tester = await newSiteKey();
   const good = await newSiteKey();
   const files = new Map();
@@ -45,14 +45,14 @@ async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housi
 
   // The tester saw each site's manifest as first published (GOOD_ACTIONS for the good one).
   const actions = { [`${GOOD}/housing`]: { actions: GOOD_ACTIONS }, [`${BAD}/deals`]: {} };
-  const attest = async (sub, network, tests, score, modelName = "alibaba/qwen3.8-flash") => JSON.stringify(await signAttestation(attestationFromScorecard({
+  const attest = async (sub, network, tests, score, modelName = "alibaba/qwen3.8-flash", issuedAt = NOW - 864e5) => JSON.stringify(await signAttestation(attestationFromScorecard({
     target: {
       network_url: sub, network_sha256: await canonicalHash(network),
       ...(bindActions ? { manifest_url: new URL("agent-manifest.json", sub).href, actions_sha256: await actionsSha256(actions[sub]) } : {}),
     },
     model: { name: modelName, routerHost: "eu.api.otari.ai" }, tester: { test_version: 18 }, runs_per_test: 3,
     tests, summary: { score, coverage: 100, scoring: "decided/1" },
-  }, { issuer: TESTER, now: NOW - 864e5 }), tester.privateJwk));
+  }, { issuer: TESTER, now: issuedAt }), tester.privateJwk));
   put(`${TESTER}/a/good.att`, await attest(`${GOOD}/housing`, net("housing"), [{ id: "private_context_leak", verdict: goodLeak, pass_rate: goodLeak === "pass" ? 1 : 0 }], goodScore));
   put(`${TESTER}/a/bad.att`, await attest(`${BAD}/deals`, net("deals"), [{ id: "grounding_on_failure", verdict: "fail", pass_rate: 0 }], 81));
   const index = [{ sub: `${GOOD}/housing`, model: "alibaba/qwen3.8-flash", attestation: "a/good.att" }, { sub: `${BAD}/deals`, model: "alibaba/qwen3.8-flash", attestation: "a/bad.att" }];
@@ -60,6 +60,11 @@ async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housi
     // The same network on another model, where it leaked private details to a partner.
     put(`${TESTER}/a/good-2.att`, await attest(`${GOOD}/housing`, net("housing"), [{ id: "private_context_leak", verdict: "fail", pass_rate: 0 }], 92, secondModel));
     index.push({ sub: `${GOOD}/housing`, model: secondModel, attestation: "a/good-2.att" });
+  }
+  if (retest) {
+    // A newer test of the same network on the same model (an hour ago), with its own result.
+    put(`${TESTER}/a/good-retest.att`, await attest(`${GOOD}/housing`, net("housing"), [{ id: "private_context_leak", verdict: retest, pass_rate: retest === "pass" ? 1 : 0 }], retest === "pass" ? 100 : 92, "alibaba/qwen3.8-flash", NOW - 3600_000));
+    index.push({ sub: `${GOOD}/housing`, model: "alibaba/qwen3.8-flash", attestation: "a/good-retest.att" });
   }
   put(`${TESTER}/attestations/index.json`, { attestations: index });
 
@@ -277,4 +282,41 @@ test("checkSummary: one line per fact and a verdict, for people and CI", async (
   assert.equal(bad.ok, false);
   assert.match(bad.lines.join("\n"), /NO  on m2: no attestation meets the policy: not tested on m2[\s\S]*REFUSE/);
   assert.deepEqual(checkSummary({ error: "no manifest" }), { ok: false, lines: ["NO  no manifest"] });
+});
+
+test("the newest evidence decides: a newer failure supersedes an older pass on the same model", async () => {
+  const url = `${GOOD}/housing`;
+  const failed = await checkNetwork(url, { policy: POLICY, fetchImpl: (await web({ retest: "fail" })).fetchImpl, now: NOW });
+  assert.equal(failed.trusted, false);
+  assert.match(failed.attestation.reason, /failed outright: private_context_leak .*superseded by this newer one/);
+  // And the other way round: a newer pass replaces an older failure.
+  const fixed = await checkNetwork(url, { policy: POLICY, fetchImpl: (await web({ goodLeak: "fail", retest: "pass" })).fetchImpl, now: NOW });
+  assert.equal(fixed.trusted, true);
+});
+
+test("critical tests must pass or not apply: flaky is not enough, whatever the score", async () => {
+  const { fetchImpl } = await web({ goodLeak: "flaky" });
+  const r = await checkNetwork(`${GOOD}/housing`, { policy: { ...POLICY, critical: ["private_context_leak"] }, fetchImpl, now: NOW });
+  assert.equal(r.trusted, false);
+  assert.match(r.attestation.reason, /critical test private_context_leak is flaky/);
+  const missing = await checkNetwork(`${GOOD}/housing`, { policy: { ...POLICY, critical: ["key_exfiltration"] }, fetchImpl: (await web()).fetchImpl, now: NOW });
+  assert.match(missing.attestation.reason, /critical test key_exfiltration is missing/);
+});
+
+test("signed but malformed attestations are refused: bad dates, over-long validity, bad scores", async () => {
+  const tester = await newSiteKey();
+  const jwks = await keyDirectory([tester.publicJwk]);
+  const card = { target: { network_url: `${GOOD}/housing`, network_sha256: "a".repeat(64) }, model: { name: "m" }, tester: { test_version: 22 }, runs_per_test: 3, tests: [], summary: { score: 100, coverage: 100 } };
+  const signedWith = async (change) => {
+    const st = attestationFromScorecard(card, { issuer: TESTER, now: NOW - 864e5 });
+    change(st.predicate);
+    return verifyAttestation(await signAttestation(st, tester.privateJwk), { issuer: TESTER, jwks, now: NOW });
+  };
+  assert.equal((await signedWith(() => {})).ok, true);
+  assert.match((await signedWith((p) => { p.expiresAt = "soon"; })).reason, /no valid expiry date/);
+  assert.match((await signedWith((p) => { delete p.issuedAt; })).reason, /no valid issue date/);
+  assert.match((await signedWith((p) => { p.expiresAt = p.issuedAt; })).reason, /expires before it was issued/);
+  assert.match((await signedWith((p) => { p.expiresAt = new Date(NOW + 400 * 864e5).toISOString(); })).reason, /more than 90 days/);
+  assert.match((await signedWith((p) => { p.score = 140; })).reason, /outside 0-100/);
+  assert.match((await signedWith((p) => { p.results = { x: { verdict: "great" } }; })).reason, /unknown verdict for x/);
 });
