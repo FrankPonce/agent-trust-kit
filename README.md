@@ -1,13 +1,91 @@
 # agent-trust-kit
 
-Domain-signed identity for agents on the [open agentic web](https://github.com/cognizant-ai-labs/agentic-web):
-who published this agent network, is it unchanged, did a trusted tester check it, and
-did this request really come from that site?
+The trust layer for agents on the [open agentic web](https://github.com/cognizant-ai-labs/agentic-web),
+before they transact. Four questions, each answered by plain code, never by a model:
+
+1. **Who published this agent network, and is it unchanged?** (domain signatures)
+2. **Was it tested, on the model that will run it?** (attestations, network × model)
+3. **Did this request really come from that site, and may it come in?** (signed requests, `admit()`)
+4. **Was the deal what the person asked for, and can anyone check?** (commitments, mandates, signed receipts)
 
 Part of **[Trust Before Transaction](https://github.com/FrankPonce/trust-before-transaction)**,
 an entry to the [Open Agentic Web Challenge](https://cognizant-agenticweb.devpost.com/).
 No new cryptography: it combines existing standards, and the same code runs in browsers,
-Node 22 and Cloudflare Workers (WebCrypto Ed25519).
+Node 22 and Cloudflare Workers (WebCrypto Ed25519). Other tools sign agent files; this kit
+ties who published an agent, how it behaved on a model, and what it was allowed to do into
+one check.
+
+## Five minutes, by role
+
+```bash
+npm install github:FrankPonce/agent-trust-kit
+```
+
+**You publish an agentic site.** Make your network verifiable:
+
+```bash
+npx trust-kit keys ./keys                                   # private key stays local
+# publish keys/http-message-signatures-directory at /.well-known/http-message-signatures-directory
+npx trust-kit sign-network site/my_net.network.json --name my_net --origin https://my.site --key keys/site-key.private.jwk.json
+npx trust-kit check https://my.site/my_net --model openai/gpt-oss-20b   # what anyone else will see
+```
+
+Then have a tester such as [crash-test](https://github.com/FrankPonce/crash-test) attest it, once
+per model your visitors run it on. Re-sign and re-test after every change: the hash moves.
+
+**Your site links other sites' agents.** Show what's known about each partner on the
+runtime's consent card, before the visitor agrees to contact it: serve
+`/.well-known/peer-trust.json` with `peerTrustResponse(...)` and wrap the card with
+`withPeerTrust(...)` ([details](#peer-trust-on-the-consent-card-drop-in)). Pass the model you
+run partners on (`models`), because the partner's agents run on *your* model.
+
+**Your server takes requests from other sites' agents** (an arbiter, a booking desk):
+
+```js
+import { admit, cachingFetch, signRequest } from "agent-trust-kit";
+
+// Caller's server: sign the request and declare the model that ran its agent.
+const signed = await signRequest({ method: "POST", url, headers: {}, body }, {
+  privateJwk, signatureAgent: "https://caller.site", model: "openai/gpt-oss-20b" });
+
+// Your server: signature → declared model → domain-signed network → attestation for that model.
+const d = await admit(request, { fetchImpl: cachingFetch(fetch) });
+if (!d.ok) return refuse(d.step, d.reason);   // "signature" | "model" | "network" | "attestation"
+```
+
+Admission is not authorization. It says who is calling and how its agent was tested; what the
+request may do is your own check. For binding requests, seal what the person asked for,
+including their own limits (the **mandate**, e.g. a maximum price kept out of the model's
+reach), and answer with a signed receipt:
+
+```js
+import { commit, newNonce, signReceipt, verifyReceipt } from "agent-trust-kit";
+
+const nonce = newNonce();
+const commitment = await commit({ resident, energyKwh, readyByMs, maxPriceCents }, nonce);
+const receipt = await signReceipt({ typ: "charging-receipt/v1", iss: "https://my.site", commitment, ... }, receiptKey);
+// Anyone: verifyReceipt(receipt, { issuer: "https://my.site", typ: "charging-receipt/v1" })
+// A static page: copy src/verify-lite.js (no imports) and use verifyStatementLite(...)
+```
+
+The live housing arbiter in [taloyhtio-charging](https://github.com/FrankPonce/taloyhtio-charging)
+is built exactly this way.
+
+## Exports
+
+| Import | What |
+|---|---|
+| `agent-trust-kit/keys` | `newSiteKey`, `keyDirectory`, `fetchKeyDirectory`: Ed25519 keys at the Web Bot Auth location |
+| `agent-trust-kit/network` | `signNetwork`, `verifyNetwork`: JWS over the network's JCS hash |
+| `agent-trust-kit/attestation` | `attestationFromScorecard`, `signAttestation`, `verifyAttestation`, `actionsSha256`: in-toto + DSSE |
+| `agent-trust-kit/rekor` | `logEnvelope`, `verifyLogEntry`: Sigstore Rekor entries, verified offline |
+| `agent-trust-kit/peer` | `checkNetwork`, `checkSummary`, `peerTrustReport`, `peerTrustResponse`, `DEFAULT_TRUST_POLICY`, `cachingFetch` |
+| `agent-trust-kit/peer-card` | `withPeerTrust`, `describePeer`: the consent card line (copy the file for a static site) |
+| `agent-trust-kit/http` | `signRequest` (with `model`), `verifyRequest`: RFC 9421 |
+| `agent-trust-kit/admit` | `admit`, `DEFAULT_ADMIT_POLICY`, `declareModel`, `declaredModel`, `MODEL_META` |
+| `agent-trust-kit/receipt` | `commit`, `newNonce`, `signReceipt`, `verifyReceipt` |
+| `agent-trust-kit/verify-lite` | `verifyJws`, `verifyStatementLite`, `canonicalJson`, `canonicalHash`: WebCrypto only, no imports |
+| `agent-trust-kit/canonical`, `/dsse` | JCS (RFC 8785) hashing; DSSE envelopes |
 
 ## What it does
 
@@ -27,7 +105,7 @@ breaks the signature.
 > not who runs that domain or whether its agent behaves. That is what attestations from a
 > behavioural tester such as [crash-test](https://github.com/FrankPonce/crash-test) add.
 
-## Use
+## Lower-level use
 
 ```js
 import { newSiteKey, keyDirectory, signNetwork, verifyNetwork,
@@ -93,8 +171,7 @@ the same network once per model, and a site can ask about the one it uses:
 counts only attestations for those models, in that order, and says "not tested on …" when
 there is none. Without `models`, the best attestation on any model counts.
 
-It's what the live housing arbiter runs before it accepts a request
-([`src/arbiter/admission.js`](https://github.com/FrankPonce/taloyhtio-charging/blob/main/src/arbiter/admission.js)),
+It's the check inside `admit()`, which the live housing arbiter runs before it accepts a request,
 so the consent card a visitor sees and the server that admits the caller decide the same way:
 
 ```js
@@ -163,6 +240,7 @@ Rekor v2 accepts neither the dsse type nor pure Ed25519. Entries are public and 
 npx trust-kit keys ./keys                       # new Ed25519 key; private file stays local
 npx trust-kit sign-network site/my_net.network.json --name my_net --origin https://site.example --key keys/site-key.private.jwk.json
 npx trust-kit verify https://site.example/my_net   # OK / FAIL / UNSIGNED (a 404 or an HTML page = unsigned)
+npx trust-kit check https://site.example/my_net --model openai/gpt-oss-20b [--require-log]   # the full check: ADMIT / REFUSE, exit 0 / 1
 npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer-trust.json
 ```
 
@@ -174,6 +252,13 @@ npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer
   testers by origin; the kit checks their signature, not their judgement.
 - **Covered: the network file and the manifest's declared actions.** The site's action code,
   what an action actually does, and the live page are not covered.
+- **The declared model is the caller's claim.** `admit()` checks the attestation for the model
+  the caller signs into its request; nobody can prove which model ran in a visitor's browser.
+  It stops a site presenting a test on a strong model for a session on a weak one, not a site
+  that lies outright.
+- **Admission is not authorization.** A signed, well-tested caller can still ask for something
+  it shouldn't; the receiving service checks what each request may do (the person's code,
+  their sealed mandate, its own rules).
 - **Opt-in.** The agentic-web runtime doesn't run these checks itself; a site or an arbiter
   gets them by using the kit.
 - **No revocation.** Attestations expire after 30 days; a withdrawn one stays valid until

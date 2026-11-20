@@ -5,6 +5,7 @@
 import { httpbis } from "http-message-signatures";
 import { base64 } from "./canonical.js";
 import { fetchKeyDirectory, findKey, importKey } from "./keys.js";
+import { declareModel } from "./model.js";
 
 const COVERED = ["@method", "@authority", "@path", "content-digest", "content-type", "signature-agent"];
 const enc = new TextEncoder();
@@ -20,11 +21,14 @@ const lower = (headers) => Object.fromEntries(Object.entries(headers || {}).map(
  * Sign a request.
  *
  * :param request: {method, url, headers, body (string)}.
- * :param opts: {privateJwk (with kid), signatureAgent: the signer's origin, expiresIn: seconds (default 300)}.
+ * :param opts: {privateJwk (with kid), signatureAgent: the signer's origin, expiresIn: seconds (default 300),
+ *     model: the model that ran this site's agent; added to a JSON-RPC body as params._meta
+ *     (see model.js) before signing, so the signature covers it}.
  * :return: A new request object whose headers include content-digest, signature-agent,
  *     signature-input and signature.
  */
-export async function signRequest(request, { privateJwk, signatureAgent, expiresIn = 300 }) {
+export async function signRequest(request, { privateJwk, signatureAgent, expiresIn = 300, model = null }) {
+  if (model) request = { ...request, body: declareModel(request.body, model) };
   const key = await importKey(privateJwk);
   const headers = {
     ...lower(request.headers),

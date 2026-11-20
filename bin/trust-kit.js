@@ -2,10 +2,11 @@
 // trust-kit keys <out-dir>
 // trust-kit sign-network <network.json> --name <network> --origin <https://site> --key <private.jwk.json>
 // trust-kit verify <network-url>
+// trust-kit check <network-url> [--model <model>] [--require-log]
 // trust-kit peer-trust <your-network-url> [--network <network.json>] [--out <peer-trust.json>]
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fetchSignature, keyDirectory, newSiteKey, peerTrustReport, signNetwork, signatureUrl, verifyNetwork } from "../src/index.js";
+import { DEFAULT_TRUST_POLICY, checkNetwork, checkSummary, fetchSignature, keyDirectory, newSiteKey, peerTrustReport, signNetwork, signatureUrl, verifyNetwork } from "../src/index.js";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name) => {
@@ -96,9 +97,22 @@ async function peerTrust() {
   else console.log(text.trimEnd());
 }
 
-const commands = { keys, "sign-network": sign, verify, "peer-trust": peerTrust };
+// The whole trust check for one network, as an arbiter or consent card would run it:
+// signed by its domain, tested (on this model) under the default policy, on the public log.
+async function check() {
+  const url = rest[0];
+  if (!url) throw new Error("Usage: trust-kit check <network-url> [--model <model>] [--require-log]");
+  const model = flag("model");
+  const policy = { ...DEFAULT_TRUST_POLICY, requireLog: rest.includes("--require-log") };
+  const r = await checkNetwork(url, { policy, models: model ? [model] : null });
+  const { ok, lines } = checkSummary(r, { model });
+  console.log(lines.join("\n"));
+  process.exit(ok ? 0 : 1);
+}
+
+const commands = { keys, "sign-network": sign, verify, check, "peer-trust": peerTrust };
 if (!commands[cmd]) {
-  console.log("Usage: trust-kit <keys | sign-network | verify | peer-trust> ...");
+  console.log("Usage: trust-kit <keys | sign-network | verify | check | peer-trust> ...");
   process.exit(2);
 }
 commands[cmd]().catch((e) => {

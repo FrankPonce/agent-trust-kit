@@ -259,3 +259,22 @@ test("trust is network × model: a site asks about the model it runs partners on
   assert.equal(untested.trusted, false);
   assert.ok(untested.attestation.reason.includes("not tested on meta/llama-3.1-8b-instruct (tested on alibaba/qwen3.8-flash, openai/gpt-oss-20b)"), untested.attestation.reason);
 });
+
+test("checkSummary: one line per fact and a verdict, for people and CI", async () => {
+  const { checkSummary } = await import("../src/index.js");
+  const good = checkSummary({
+    network_url: "https://a.example/net", network_sha256: "a".repeat(64),
+    signature: { ok: true, by: "https://a.example", kid: "k".repeat(43) },
+    attestation: { ok: true, score: 100, coverage: 100, model: "m1", iss: "https://t.example", test_version: 22, exp: "2026-12-30T00:00:00Z", log: { ok: true, url: "https://rekor.sigstore.dev", logIndex: 7 } },
+  }, { model: "m1" });
+  assert.equal(good.ok, true);
+  assert.match(good.lines.join("\n"), /OK  signed by a\.example[\s\S]*OK  tested 100\/100 \(coverage 100%\) on m1[\s\S]*entry #7[\s\S]*ADMIT/);
+  const bad = checkSummary({
+    network_url: "https://b.example/net", network_sha256: "b".repeat(64),
+    signature: { ok: true, by: "https://b.example", kid: "k".repeat(43) },
+    attestation: { ok: false, reason: "not tested on m2 (tested on m1)" },
+  }, { model: "m2" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.lines.join("\n"), /NO  on m2: no attestation meets the policy: not tested on m2[\s\S]*REFUSE/);
+  assert.deepEqual(checkSummary({ error: "no manifest" }), { ok: false, lines: ["NO  no manifest"] });
+});

@@ -300,3 +300,28 @@ export async function peerTrustReport(siteNetworkUrl, { policy = DEFAULT_TRUST_P
     peers,
   };
 }
+
+/**
+ * A plain-text summary of checkNetwork's result, for people and CI (trust-kit check).
+ *
+ * :param r: checkNetwork's result.
+ * :param opts: {model: the model asked about, if any}.
+ * :return: {ok: whether signature and attestation both hold, lines: [string]}.
+ */
+export function checkSummary(r, { model = null } = {}) {
+  if (r.error) return { ok: false, lines: [`NO  ${r.error}`] };
+  const s = r.signature;
+  const a = r.attestation;
+  const host = (u) => { try { return new URL(u).host; } catch { return u; } };
+  const lines = [`${r.network_url}  (network sha256 ${String(r.network_sha256).slice(0, 12)}…)`];
+  lines.push(s.ok ? `OK  signed by ${host(s.by)} (key ${String(s.kid).slice(0, 10)}…)` : `NO  not signed by its domain: ${s.reason}`);
+  if (a.ok) {
+    lines.push(`OK  tested ${a.score}/100 (coverage ${a.coverage}%) on ${a.model} by ${host(a.iss)}, test version ${a.test_version}, valid until ${String(a.exp).slice(0, 10)}`);
+  } else {
+    lines.push(`NO  ${model ? `on ${model}: ` : ""}no attestation meets the policy: ${a.reason}`);
+  }
+  if (a.log) lines.push(a.log.ok ? `OK  on the public log ${host(a.log.url)}, entry #${a.log.logIndex}` : `NO  log entry does not check out: ${a.log.reason}`);
+  const ok = !!(s.ok && a.ok);
+  lines.push(ok ? "ADMIT: signed and tested under this policy" : "REFUSE: an arbiter with this policy would not let it in");
+  return { ok, lines };
+}

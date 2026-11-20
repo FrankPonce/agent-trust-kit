@@ -29,7 +29,11 @@
     "./dsse": "./src/dsse.js",
     "./peer": "./src/peer.js",
     "./peer-card": "./src/peer-card.js",
-    "./rekor": "./src/rekor.js"
+    "./rekor": "./src/rekor.js",
+    "./admit": "./src/admit.js",
+    "./model": "./src/model.js",
+    "./verify-lite": "./src/verify-lite.js",
+    "./receipt": "./src/receipt.js"
   },
   "files": [
     "src",
