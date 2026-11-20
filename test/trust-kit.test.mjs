@@ -279,3 +279,12 @@ test("peerTrustResponse: a report made for one model or policy never answers for
   await peerTrustResponse("https://site.example/n", { fetchImpl, models: ["b"] });
   assert.ok(calls > afterA, "another model: checked again");
 });
+
+test("verifyRequest: the query is signed too; changing only it breaks the signature", async () => {
+  const withQuery = { ...REQ, url: "https://arbiter.example/requests?night=2026-12-22&kwh=20" };
+  const signed = await signRequest(withQuery, { privateJwk: TEST_KEY, signatureAgent: AGENT });
+  assert.equal((await verifyRequest(signed, { jwks: JWKS })).ok, true);
+  const changed = { ...signed, url: signed.url.replace("kwh=20", "kwh=90") };
+  assert.equal((await verifyRequest(changed, { jwks: JWKS })).ok, false);
+  assert.match(signed.headers["signature-input"], /"@query"/);
+});

@@ -244,6 +244,7 @@ npx trust-kit keys ./keys                       # new Ed25519 key; private file 
 npx trust-kit sign-network site/my_net.network.json --name my_net --origin https://site.example --key keys/site-key.private.jwk.json
 npx trust-kit verify https://site.example/my_net   # OK / FAIL / UNSIGNED (a 404 or an HTML page = unsigned)
 npx trust-kit check https://site.example/my_net --model openai/gpt-oss-20b [--require-log]   # the full check: ADMIT / REFUSE, exit 0 / 1
+npx trust-kit verify-receipt receipt.jws --issuer https://site.example [--typ charging-receipt/v1]   # check a receipt away from the site that issued it
 npx trust-kit peer-trust https://site.example/my_net --out site/.well-known/peer-trust.json
 ```
 

@@ -7,7 +7,9 @@ import { base64 } from "./canonical.js";
 import { fetchKeyDirectory, findKey, importKey } from "./keys.js";
 import { declareModel, declareNetwork } from "./model.js";
 
-const COVERED = ["@method", "@authority", "@path", "content-digest", "content-type", "signature-agent"];
+// The query is covered too: a service that reads meaning from it must not have it changed
+// under a valid signature. (Without a query, @query is "?".)
+const COVERED = ["@method", "@authority", "@path", "@query", "content-digest", "content-type", "signature-agent"];
 const enc = new TextEncoder();
 
 async function contentDigest(body) {

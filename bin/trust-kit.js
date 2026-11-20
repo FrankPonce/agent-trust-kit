@@ -3,10 +3,11 @@
 // trust-kit sign-network <network.json> --name <network> --origin <https://site> --key <private.jwk.json>
 // trust-kit verify <network-url>
 // trust-kit check <network-url> [--model <model>] [--require-log]
+// trust-kit verify-receipt <receipt.jws | file> --issuer <https://site> [--typ <type>]
 // trust-kit peer-trust <your-network-url> [--network <network.json>] [--out <peer-trust.json>]
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_TRUST_POLICY, checkNetwork, checkSummary, fetchSignature, keyDirectory, newSiteKey, peerTrustReport, signNetwork, signatureUrl, verifyNetwork } from "../src/index.js";
+import { DEFAULT_TRUST_POLICY, checkNetwork, checkSummary, fetchSignature, keyDirectory, newSiteKey, peerTrustReport, signNetwork, signatureUrl, verifyNetwork, verifyReceipt } from "../src/index.js";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name) => {
@@ -110,9 +111,26 @@ async function check() {
   process.exit(ok ? 0 : 1);
 }
 
-const commands = { keys, "sign-network": sign, verify, check, "peer-trust": peerTrust };
+// Check a signed receipt yourself, away from the site that issued it: the signature against the
+// issuer's published keys, its type, and what it says.
+async function verifyReceiptCmd() {
+  const input = rest[0];
+  const issuer = flag("issuer");
+  if (!input || !issuer) throw new Error("Usage: trust-kit verify-receipt <receipt.jws | file> --issuer <https://site> [--typ <type>]");
+  let jws = input;
+  if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(input.trim())) jws = (await readFile(input, "utf8")).trim();
+  const r = await verifyReceipt(jws, { issuer, typ: flag("typ") ?? null });
+  if (!r.ok) {
+    console.log(`FAIL: ${r.reason}`);
+    process.exit(1);
+  }
+  console.log(`OK: signed by ${new URL(r.receipt.iss).host} (key ${String(r.kid).slice(0, 10)}…), type ${r.receipt.typ}`);
+  console.log(JSON.stringify(r.receipt, null, 2));
+}
+
+const commands = { keys, "sign-network": sign, verify, check, "verify-receipt": verifyReceiptCmd, "peer-trust": peerTrust };
 if (!commands[cmd]) {
-  console.log("Usage: trust-kit <keys | sign-network | verify | check | peer-trust> ...");
+  console.log("Usage: trust-kit <keys | sign-network | verify | check | verify-receipt | peer-trust> ...");
   process.exit(2);
 }
 commands[cmd]().catch((e) => {
