@@ -26,7 +26,7 @@ beforeEach(() => clearPeerTrustCache());
 
 const GOOD_ACTIONS = { version: 1, agentTools: ["get_rules"] };
 
-async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing"), servedActions = GOOD_ACTIONS, bindActions = true } = {}) {
+async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housing"), servedActions = GOOD_ACTIONS, bindActions = true, secondModel = null } = {}) {
   const tester = await newSiteKey();
   const good = await newSiteKey();
   const files = new Map();
@@ -45,17 +45,23 @@ async function web({ goodScore = 100, goodLeak = "pass", servedGood = net("housi
 
   // The tester saw each site's manifest as first published (GOOD_ACTIONS for the good one).
   const actions = { [`${GOOD}/housing`]: { actions: GOOD_ACTIONS }, [`${BAD}/deals`]: {} };
-  const attest = async (sub, network, tests, score) => JSON.stringify(await signAttestation(attestationFromScorecard({
+  const attest = async (sub, network, tests, score, modelName = "alibaba/qwen3.8-flash") => JSON.stringify(await signAttestation(attestationFromScorecard({
     target: {
       network_url: sub, network_sha256: await canonicalHash(network),
       ...(bindActions ? { manifest_url: new URL("agent-manifest.json", sub).href, actions_sha256: await actionsSha256(actions[sub]) } : {}),
     },
-    model: { name: "alibaba/qwen3.8-flash", routerHost: "eu.api.otari.ai" }, tester: { test_version: 18 }, runs_per_test: 3,
+    model: { name: modelName, routerHost: "eu.api.otari.ai" }, tester: { test_version: 18 }, runs_per_test: 3,
     tests, summary: { score, coverage: 100, scoring: "decided/1" },
   }, { issuer: TESTER, now: NOW - 864e5 }), tester.privateJwk));
   put(`${TESTER}/a/good.att`, await attest(`${GOOD}/housing`, net("housing"), [{ id: "private_context_leak", verdict: goodLeak, pass_rate: goodLeak === "pass" ? 1 : 0 }], goodScore));
   put(`${TESTER}/a/bad.att`, await attest(`${BAD}/deals`, net("deals"), [{ id: "grounding_on_failure", verdict: "fail", pass_rate: 0 }], 81));
-  put(`${TESTER}/attestations/index.json`, { attestations: [{ sub: `${GOOD}/housing`, attestation: "a/good.att" }, { sub: `${BAD}/deals`, attestation: "a/bad.att" }] });
+  const index = [{ sub: `${GOOD}/housing`, model: "alibaba/qwen3.8-flash", attestation: "a/good.att" }, { sub: `${BAD}/deals`, model: "alibaba/qwen3.8-flash", attestation: "a/bad.att" }];
+  if (secondModel) {
+    // The same network on another model, where it leaked private details to a partner.
+    put(`${TESTER}/a/good-2.att`, await attest(`${GOOD}/housing`, net("housing"), [{ id: "private_context_leak", verdict: "fail", pass_rate: 0 }], 92, secondModel));
+    index.push({ sub: `${GOOD}/housing`, model: secondModel, attestation: "a/good-2.att" });
+  }
+  put(`${TESTER}/attestations/index.json`, { attestations: index });
 
   const calls = [];
   const fetchImpl = async (url) => {
@@ -114,7 +120,11 @@ test("peerTrustReport: lists other origins' networks and MCP servers, not the si
     ["housing.example", "network", true], ["deals.example", "network", false], ["tools.example", "mcp", false],
   ]);
   assert.equal(report.peers[0].label, "Housing company");
-  assert.deepEqual(report.policy, { testers: [TESTER], minScore: 80, minCoverage: 80, noFailedTests: true, bindActions: true });
+  assert.deepEqual(report.policy, { testers: [TESTER], minScore: 80, minCoverage: 80, noFailedTests: true, bindActions: true, requireLog: false });
+  const forModel = await peerTrustReport(`${SITE}/charge_planner`, { policy: POLICY, fetchImpl, now: NOW, models: ["openai/gpt-oss-20b"] });
+  assert.deepEqual(forModel.policy.models, ["openai/gpt-oss-20b"], "the report says which model its checks were for");
+  const untested = describePeer({ kind: "network", trusted: false, signature: { ok: true, by: GOOD }, attestation: { ok: false, reason: "not tested on openai/gpt-oss-20b (tested on alibaba/qwen3.8-flash)" } });
+  assert.equal(untested.text, "Signed by housing.example · not tested on gpt-oss-20b, the model this site uses");
   assert.equal(isMcpRef("https://a.example/mcp"), true);
   assert.equal(isMcpRef("https://a.example/agent"), false);
 });
@@ -230,4 +240,22 @@ test("transparency log: off by default; when required, an attestation not on a l
   const strict = await checkNetwork(`${GOOD}/housing`, { policy: { ...POLICY, requireLog: true }, fetchImpl, now: NOW });
   assert.equal(strict.trusted, false);
   assert.match(strict.attestation.reason, /not on a public transparency log/);
+});
+
+test("trust is network × model: a site asks about the model it runs partners on", async () => {
+  const { fetchImpl } = await web({ secondModel: "openai/gpt-oss-20b" });
+  const url = `${GOOD}/housing`;
+  const any = await checkNetwork(url, { policy: POLICY, fetchImpl, now: NOW });
+  assert.equal(any.trusted, true, "no model named: the best attestation counts");
+  const onQwen = await checkNetwork(url, { policy: POLICY, fetchImpl, now: NOW, models: ["alibaba/qwen3.8-flash"] });
+  assert.deepEqual([onQwen.trusted, onQwen.attestation.model], [true, "alibaba/qwen3.8-flash"]);
+  const onGpt = await checkNetwork(url, { policy: POLICY, fetchImpl, now: NOW, models: ["openai/gpt-oss-20b"] });
+  assert.equal(onGpt.trusted, false, "the same network leaks on this model");
+  assert.equal(onGpt.attestation.model, "openai/gpt-oss-20b");
+  assert.match(onGpt.attestation.reason, /failed outright: private_context_leak/);
+  const preferred = await checkNetwork(url, { policy: POLICY, fetchImpl, now: NOW, models: ["openai/gpt-oss-20b", "alibaba/qwen3.8-flash"] });
+  assert.equal(preferred.trusted, true, "a fallback model the site also accepts can vouch");
+  const untested = await checkNetwork(url, { policy: POLICY, fetchImpl, now: NOW, models: ["meta/llama-3.1-8b-instruct"] });
+  assert.equal(untested.trusted, false);
+  assert.ok(untested.attestation.reason.includes("not tested on meta/llama-3.1-8b-instruct (tested on alibaba/qwen3.8-flash, openai/gpt-oss-20b)"), untested.attestation.reason);
 });

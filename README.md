@@ -87,6 +87,12 @@ an unexpired attestation for exactly that network hash, with score ≥ 80, cover
 test that failed outright (`DEFAULT_TRUST_POLICY`; pass your own `policy`). Partners linked at
 runtime by the visitor aren't in your network file, so they show as "not checked".
 
+**Trust is network × model.** A partner's agents run on *your* model, so a tester can attest
+the same network once per model, and a site can ask about the one it uses:
+`checkNetwork(url, { models: ["openai/gpt-oss-20b"] })` (or `peerTrustReport(…, { models })`)
+counts only attestations for those models, in that order, and says "not tested on …" when
+there is none. Without `models`, the best attestation on any model counts.
+
 It's what the live housing arbiter runs before it accepts a request
 ([`src/arbiter/admission.js`](https://github.com/FrankPonce/taloyhtio-charging/blob/main/src/arbiter/admission.js)),
 so the consent card a visitor sees and the server that admits the caller decide the same way:

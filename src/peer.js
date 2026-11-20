@@ -82,13 +82,14 @@ export function isMcpRef(ref) {
  *
  * :param target: A network URL ("https://site/path/<name>"), or {origin} for the first
  *     network in that origin's agent-manifest.json.
- * :param opts: {policy, fetchImpl, now (ms), jwks (tests: the peer's key directory)}.
+ * :param opts: {policy, fetchImpl, now (ms), jwks (tests: the peer's key directory), models (the
+ *     model names this site runs partners on, preferred first: only attestations for them count)}.
  * :return: {network_url, origin, network_sha256, trusted, signature: {ok, status:
  *     "valid"|"unsigned"|"invalid", by?, kid?, reason?}, attestation: {ok, iss?, score?,
  *     coverage?, model?, exp?, test_version?, failed: [], results: {id: verdict}, reason?}}
  *     or {trusted: false, error, network_url?, origin} when the network can't be loaded.
  */
-export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetchImpl = globalThis.fetch, now = Date.now(), jwks = null } = {}) {
+export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetchImpl = globalThis.fetch, now = Date.now(), jwks = null, models = null } = {}) {
   let base;
   let name = null;
   if (typeof target === "string") {
@@ -137,12 +138,12 @@ export async function checkNetwork(target, { policy = DEFAULT_TRUST_POLICY, fetc
   }
 
   // 2. Does it behave: an attestation for exactly this network hash, meeting the policy.
-  const attestation = await bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now });
+  const attestation = await bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now, models });
 
   return { network_url, origin, network_sha256, actions_sha256, trusted: signature.ok && attestation.ok, signature, attestation };
 }
 
-async function bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now }) {
+async function bestAttestation({ network_url, network_sha256, actions_sha256, policy, fetchImpl, now, models = null }) {
   const problems = [];
   let shown = null; // a verified attestation that misses the policy, to show honestly
   for (const t of policy.testers || []) {
@@ -153,7 +154,15 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
       problems.push(`${t.origin}: ${error.message}`);
       continue;
     }
-    for (const a of (index.attestations || []).filter((x) => x.sub === network_url)) {
+    // Trust is network × model: with `models` (the model(s) this site runs partners on, in
+    // order of preference), only attestations for those models count.
+    const forNetwork = (index.attestations || []).filter((x) => x.sub === network_url);
+    const rank = (x) => (models ? models.indexOf(x.model) : 0);
+    const candidates = forNetwork.filter((x) => rank(x) >= 0).sort((x, y) => rank(x) - rank(y));
+    if (models && !candidates.length && forNetwork.length) {
+      problems.push(`not tested on ${models.join(" or ")} (tested on ${[...new Set(forNetwork.map((x) => x.model))].join(", ")})`);
+    }
+    for (const a of candidates) {
       let signed;
       try {
         const resp = await fetchImpl(new URL(a.attestation ?? a.jws, `${t.origin}/`).href);
@@ -169,6 +178,10 @@ async function bestAttestation({ network_url, network_sha256, actions_sha256, po
         continue;
       }
       const s = v.statement;
+      if (models && !models.includes(s.model?.name)) {
+        problems.push(`attested on ${s.model?.name}, not on ${models.join(" or ")}`);
+        continue;
+      }
       const results = Object.fromEntries(Object.entries(s.results || {}).map(([id, r]) => [id, r?.verdict ?? null]));
       const failed = Object.entries(results).filter(([, verdict]) => verdict === "fail").map(([id]) => id);
       const facts = { iss: s.iss, score: s.score, coverage: s.coverage ?? null, model: s.model?.name ?? null, exp: s.exp, test_version: s.test_version ?? null, failed, results };
@@ -243,11 +256,11 @@ export function clearPeerTrustCache() {
  *
  * :param siteNetworkUrl: This site's own network URL.
  * :param opts: {policy, fetchImpl, now, network (the parsed network, to skip fetching it),
- *     jwks}.
+ *     jwks, models (the model(s) this site runs partners on: see checkNetwork)}.
  * :return: {typ: "peer-trust/v1", site, generated_at, policy, peers: [{host, url, kind,
  *     label?, ...checkNetwork() result}]}.
  */
-export async function peerTrustReport(siteNetworkUrl, { policy = DEFAULT_TRUST_POLICY, fetchImpl = globalThis.fetch, now = Date.now(), network = null, jwks = null } = {}) {
+export async function peerTrustReport(siteNetworkUrl, { policy = DEFAULT_TRUST_POLICY, fetchImpl = globalThis.fetch, now = Date.now(), network = null, jwks = null, models = null } = {}) {
   const site = new URL(siteNetworkUrl);
   const config = network ?? await (async () => {
     const parts = site.pathname.split("/").filter(Boolean);
@@ -276,14 +289,14 @@ export async function peerTrustReport(siteNetworkUrl, { policy = DEFAULT_TRUST_P
       peers.push({ host, url, kind: "mcp", trusted: false, note: "an MCP tool server: no signature or attestation format applies yet" });
       continue;
     }
-    const r = await checkNetwork(url, { policy, fetchImpl, now, jwks });
+    const r = await checkNetwork(url, { policy, fetchImpl, now, jwks, models });
     peers.push({ host, url, kind: "network", ...(labels[url] ? { label: labels[url] } : {}), ...r });
   }
   return {
     typ: PEER_TRUST_TYPE,
     site: siteNetworkUrl,
     generated_at: new Date(now).toISOString(),
-    policy: { testers: (policy.testers || []).map((t) => t.origin), minScore: policy.minScore, minCoverage: policy.minCoverage, noFailedTests: policy.noFailedTests !== false, bindActions: policy.bindActions !== false },
+    policy: { testers: (policy.testers || []).map((t) => t.origin), minScore: policy.minScore, minCoverage: policy.minCoverage, noFailedTests: policy.noFailedTests !== false, bindActions: policy.bindActions !== false, requireLog: !!policy.requireLog, ...(models ? { models } : {}) },
     peers,
   };
 }
