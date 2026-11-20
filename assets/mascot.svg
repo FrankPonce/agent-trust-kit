@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="140" viewBox="0 0 150 140" role="img" aria-labelledby="t">
+  <title id="t">The agent-trust-kit shield, waving</title>
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5BE8AA"/>
+      <stop offset="1" stop-color="#22A07A"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(14 10) scale(0.76) translate(-798 -82)">
+    <path d="M918 172 Q944 160 950 124" fill="none" stroke="#0B3B2C" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="951" cy="116" r="9" fill="#5BE8AA" stroke="#0B3B2C" stroke-width="4"/>
+    <path d="M968 100 l7 -7 M950 92 l0 -10 M970 122 l6 0" stroke="#F5B942" stroke-width="4" stroke-linecap="round"/>
+    <path d="M860 82 L922 104 V156 C922 200 896 228 860 242 C824 228 798 200 798 156 V104 Z" fill="url(#shield)" stroke="#0B3B2C" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M812 112 L860 95" stroke="#C9FBE4" stroke-opacity="0.7" stroke-width="5" stroke-linecap="round"/>
+    <ellipse cx="841" cy="152" rx="6" ry="8.5" fill="#06140f"/>
+    <ellipse cx="879" cy="152" rx="6" ry="8.5" fill="#06140f"/>
+    <circle cx="843" cy="149" r="2.2" fill="#FFFFFF"/>
+    <circle cx="881" cy="149" r="2.2" fill="#FFFFFF"/>
+    <circle cx="828" cy="172" r="7" fill="#FF6F8E" fill-opacity="0.85"/>
+    <circle cx="892" cy="172" r="7" fill="#FF6F8E" fill-opacity="0.85"/>
+    <path d="M850 172 Q860 181 870 172" fill="none" stroke="#06140f" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>
